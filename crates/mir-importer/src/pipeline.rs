@@ -776,7 +776,7 @@ fn select_target(features: DetectedFeatures) -> &'static str {
         // Cluster features require sm_90+ but are forward-compatible.
         // Use sm_90 for Hopper compatibility, works on Blackwell too.
         DetectedFeatures::Cluster => "sm_90",
-        DetectedFeatures::Basic => "sm_80",
+        DetectedFeatures::Basic => "sm_75",
     }
 }
 
@@ -892,6 +892,13 @@ fn generate_ptx(ll_path: &Path, ptx_path: &Path) -> Result<String, PipelineError
         Some(t) => t.as_str(),
         None => select_target(detected),
     };
+
+    // Target capability gate for SM75
+    if (target == "sm_75" || target == "compute_75") && detected != DetectedFeatures::Basic {
+        return Err(PipelineError::PtxGeneration(format!(
+            "Architecture {target} does not support detected advanced features: {detected:?}"
+        )));
+    }
 
     // Log target selection
     if std::env::var("CUDA_OXIDE_VERBOSE").is_ok() {
@@ -1195,8 +1202,22 @@ mod tests {
         assert_eq!(select_target(DetectedFeatures::Wgmma), "sm_90a");
         assert_eq!(select_target(DetectedFeatures::Tma), "sm_100");
         assert_eq!(select_target(DetectedFeatures::Cluster), "sm_90");
-        assert_eq!(select_target(DetectedFeatures::Basic), "sm_80");
+        assert_eq!(select_target(DetectedFeatures::Basic), "sm_75");
     }
+
+    #[test]
+    fn test_sm75_negative_gating_logic() {
+        let is_valid = |target: &str, detected: DetectedFeatures| {
+            !((target == "sm_75" || target == "compute_75") && detected != DetectedFeatures::Basic)
+        };
+        assert!(is_valid("sm_75", DetectedFeatures::Basic));
+        assert!(!is_valid("sm_75", DetectedFeatures::Wgmma));
+        assert!(!is_valid("sm_75", DetectedFeatures::Tma));
+        assert!(!is_valid("sm_75", DetectedFeatures::Cluster));
+        assert!(!is_valid("sm_75", DetectedFeatures::Blackwell));
+        assert!(is_valid("sm_80", DetectedFeatures::Wgmma));
+    }
+
 
     /// Build a minimal LLVM dialect module containing a single function
     /// declaration named `name`. The module is intentionally empty otherwise;
