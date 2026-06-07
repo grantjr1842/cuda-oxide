@@ -219,6 +219,20 @@ pub(crate) fn detect_features(ll_path: &Path) -> DetectedFeatures {
 
 #[cfg(test)]
 mod tests {
+    //! Tests for the target resolution pipeline. Organised (in order) into:
+    //!
+    //! - **detector tests**: per-intrinsic-family `contains_*` positive/negative.
+    //! - **collapse tests**: `detect_features` priority and `Basic` fall-through.
+    //! - **select_target tests**: the feature-to-arch mapping.
+    //! - **gate tests**: the SM75 capability check, including the `sm_75a` typo guard.
+    //! - **integration tests**: end-to-end chain (IR -> detect -> select -> gate),
+    //!   including the doc-pin for `tma_copy --arch sm_75`.
+    //!
+    //! The grouping is comment-annotated rather than nested submodules
+    //! because nested `mod` blocks would force the test names to be
+    //! re-prefixed; the flat list is grep-friendly and matches the
+    //! surrounding crate's style.
+
     use super::*;
     use std::{fs, path::PathBuf};
 
@@ -231,6 +245,10 @@ mod tests {
         fs::write(&path, contents).expect("write temp LLVM IR");
         path
     }
+
+    // =========================================================================
+    // Detector tests: per-intrinsic-family contains_* positive/negative.
+    // =========================================================================
 
     #[test]
     fn test_contains_wgmma_features_detects_intrinsic() {
@@ -286,6 +304,10 @@ mod tests {
         let _ = fs::remove_file(unicast);
     }
 
+    // =========================================================================
+    // Collapse tests: detect_features priority and Basic fall-through.
+    // =========================================================================
+
     #[test]
     fn test_detect_features_prefers_most_specific() {
         // A file with both blackwell and wgmma patterns must collapse to
@@ -306,6 +328,10 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    // =========================================================================
+    // select_target tests: feature-to-arch mapping (pure lookup table).
+    // =========================================================================
+
     #[test]
     fn test_select_target_prefers_required_architecture() {
         assert_eq!(select_target(DetectedFeatures::Blackwell), "sm_100a");
@@ -315,6 +341,10 @@ mod tests {
         assert_eq!(select_target(DetectedFeatures::Cluster), "sm_90");
         assert_eq!(select_target(DetectedFeatures::Basic), "sm_75");
     }
+
+    // =========================================================================
+    // Gate tests: SM75 capability check, including the sm_75a typo guard.
+    // =========================================================================
 
     #[test]
     fn test_sm75_gate_accepts_basic_on_sm75() {
@@ -390,6 +420,11 @@ mod tests {
         assert!(!is_sm75_target("sm_100"));
         assert!(!is_sm75_target("sm_100a"));
     }
+
+    // =========================================================================
+    // Integration tests: end-to-end chain through real IR fixtures, plus
+    // doc-pin tests that lock the cuda-oxide-book claims to specific output.
+    // =========================================================================
 
     #[test]
     fn test_sm75_gate_catches_real_wgmma_intrinsic() {

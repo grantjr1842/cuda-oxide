@@ -997,6 +997,51 @@ pub fn doctor(ctx: &Context) {
         }
     }
 
+    // 5b. SM75 baseline readiness
+    //
+    // Reports the host GPU's compute capability (when a CUDA driver is
+    // available) and the backend's sm_75 default target. Lets users catch
+    // "I'm on Turing, why is my kernel not loading?" before the JIT
+    // crashes. The auto-detect is best-effort: if no GPU is reachable
+    // (CI runners, headless boxes), the backend's `select_target` default
+    // (sm_75 for `DetectedFeatures::Basic`) still applies.
+    print!("SM75 baseline readiness... ");
+    match cuda_core::CudaContext::new(0) {
+        Ok(ctx) => match ctx.compute_capability() {
+            Ok((major, minor)) => {
+                let sm = format!("sm_{}{}", major, minor);
+                let is_sm75 = major == 7 && minor == 5;
+                if is_sm75 {
+                    println!(
+                        "✓ host CC {}.{} matches the sm_75 default target",
+                        major, minor
+                    );
+                } else if major >= 7 {
+                    println!(
+                        "✓ host CC {}.{} ({}); backend default is sm_75 — auto-detect will bump the target when needed",
+                        major, minor, sm
+                    );
+                } else {
+                    println!(
+                        "✗ host CC {}.{} ({}) is older than the sm_75 baseline; cuda-oxide may not run on this host",
+                        major, minor, sm
+                    );
+                    ok = false;
+                }
+            }
+            Err(e) => {
+                println!(
+                    "- driver reported no compute capability ({e}); backend will use sm_75 default"
+                );
+            }
+        },
+        Err(e) => {
+            // No CUDA driver / no device 0 — not a hard failure (CI,
+            // headless builds). The backend's sm_75 default still applies.
+            println!("- no CUDA device reachable ({e}); backend will use sm_75 default");
+        }
+    }
+
     // 6. clang / libclang resource dir (host `cuda-bindings` / bindgen)
     //
     // The host `cuda-bindings` crate's build.rs runs bindgen, which loads

@@ -42,6 +42,16 @@
 use pliron::common_traits::Verify;
 use rustc_public::mir::mono::Instance;
 
+// Submodule is declared in `pipeline.rs` (not in `lib.rs`) because this
+// crate uses `#![feature(rustc_private)]` with explicit `extern crate`
+// declarations in `lib.rs`. The combination confuses rustc's module
+// resolution: declaring `pub mod target_resolution;` in `lib.rs` with
+// the file at `src/target_resolution.rs` produces E0583 "file not
+// found" — the compiler looks for the file relative to `lib.rs`'s
+// position but ignores it for sibling-of-pipeline layouts. Putting the
+// file under `src/pipeline/target_resolution.rs` and declaring
+// `mod target_resolution;` here (the parent of the subdirectory)
+// works around the issue. Tracking a cleaner fix as a follow-up.
 mod target_resolution;
 
 /// A function collected for GPU compilation.
@@ -745,8 +755,8 @@ fn generate_ptx(ll_path: &Path, ptx_path: &Path) -> Result<String, PipelineError
     // Check for user-specified target override
     let target_override = std::env::var("CUDA_OXIDE_TARGET").ok();
 
-    // Detect features (order matters: most specific first). All target
-    // resolution logic lives in `target_resolution`.
+    // Detect features. The priority chain and "most specific first"
+    // ordering live in `target_resolution::detect_features`.
     let detected = target_resolution::detect_features(ll_path);
 
     // Use override if provided, otherwise auto-detect

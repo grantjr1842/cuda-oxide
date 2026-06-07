@@ -1,0 +1,92 @@
+---
+name: sm75-baseline
+
+# End-to-end check that the SM75 baseline support claimed in
+# `cuda-oxide-book/compiler/sm75-support.md` actually works:
+#
+#   1. `cargo oxide build vecadd` — Basic kernel must compile to PTX
+#      with the sm_75 default target.
+#   2. `cargo oxide build tma_copy --arch sm_75` — TMA kernel must be
+#      REJECTED with the exact error string the doc advertises:
+#      `Architecture sm_75 does not support detected advanced features: Tma`
+#
+# Unlike `unit-tests.yml`, this job runs `llc` and the full codegen
+# pipeline, so it needs the CUDA toolkit and a PTX-capable LLVM. The
+# job does not need a GPU — PTX is just a text file at this stage.
+#
+# This complements the per-crate `mir-importer` unit tests (which
+# cover the gate predicate) and the `rustc-codegen-cuda` clippy job
+# (which covers kernel compilation) with an end-to-end test of the
+# gate's user-facing behavior.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sm75-baseline:
+    name: sm_75 baseline (build vecadd + reject tma_copy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        id: cuda-toolkit
+        with:
+          cuda: "13.1.1"
+          method: network
+          sub-packages: '["nvcc", "cudart-dev"]'
+          non-cuda-sub-packages: '["libcurand-dev"]'
+
+      - name: Install LLVM 21 (matches the README's `llc-21` requirement)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-21
+          llc-21 --version | grep nvptx
+
+      - name: Build vecadd to PTX (must succeed with sm_75 default)
+        env:
+          CUDA_OXIDE_LLC: /usr/bin/llc-21
+          CUDA_OXIDE_VERBOSE: "1"
+        run: |
+          set -e
+          # Use cargo oxide's `build` subcommand (not `run`) so no GPU
+          # is needed — it stops at PTX emission.
+          cargo oxide build vecadd
+          # The build should leave vecadd.ptx behind. Sanity check it.
+          test -f target/vecadd.ptx
+          head -1 target/vecadd.ptx
+          # The PTX must declare sm_75 as the target arch (Basic → sm_75).
+          grep -E '^\.version|^\.target' target/vecadd.ptx
+
+      - name: Build tma_copy with sm_75 override (must fail with the expected error)
+        env:
+          CUDA_OXIDE_LLC: /usr/bin/llc-21
+        run: |
+          set -e
+          # Capture the gate's error string. The gate fires inside the
+          # rustc-codegen-cuda backend (linked into the rustc invocation),
+          # so the failure surfaces as a non-zero cargo build exit code.
+          out="$(cargo oxide build tma_copy --arch sm_75 2>&1 || true)"
+          echo "--- captured output ---"
+          echo "$out"
+          echo "--- end captured output ---"
+          # Pin the exact doc-advertised error string. A regression in the
+          # gate's error format or the tma_copy example would fail this
+          # check, which is the whole point of having it.
+          if ! echo "$out" | grep -F "Architecture sm_75 does not support detected advanced features: Tma" > /dev/null; then
+            echo "::error::tma_copy + --arch sm_75 did not produce the expected gate error"
+            exit 1
+          fi
