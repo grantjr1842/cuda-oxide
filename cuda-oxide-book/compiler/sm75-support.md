@@ -19,11 +19,27 @@ The following CUDA core features are fully supported and validated on `sm_75`:
 *   **Debugging**: Console printf (`gpu_printf`) and assertion macros (`gpu_assert`).
 *   **Safe Slicing**: Out-of-bounds safe indexing via `DisjointSlice`.
 
+### 2.1. What's *not* in the SM75 baseline
+
+The following CUDA core features are **explicitly absent on Turing** and the compiler will reject kernels that emit them. The first column is the minimum architecture that supports the feature; the second column is why it's gated.
+
+| Feature                         | Min arch | Why gated on SM75                                         |
+|---------------------------------|----------|-----------------------------------------------------------|
+| Async copy (`cp.async`)         | sm_80    | Ampere async-memcpy engine. Turing lacks the hardware.    |
+| Warp-aggregated barrier (`bar.sync` with named barrier counts) | sm_80 | Ampere `bar.sync` named barriers need the A100 hardware. |
+| `cuda::pipeline` / HW pipeline barriers | sm_80 | Built on `cp.async`; unavailable on Turing.              |
+| 64-bit atomics on global memory | sm_60    | Available on Turing; falls under `DetectedFeatures::Basic` and is not separately gated. |
+| Distributed shared memory (`mapa.shared::cluster`) | sm_90 | Hopper-only distributed shared memory. |
+| TMA, WGMMA, tcgen05             | sm_90+   | See §3 — these are gated by the negative-feature mechanism. |
+| `bar.warp.sync` (warp-specialisation barrier) | sm_80 | Ampere hardware feature.                              |
+
+If a kernel compiles cleanly on `Basic → sm_75` (no override), it is guaranteed to run on Turing-class hardware. The gate's only role is to *prevent* an advanced-feature kernel from silently being compiled for the wrong target.
+
 ## 3. Negative Gating & Gated Features
 
 To prevent compilation leaks and JIT loading crashes on Turing hardware, the compiler enforces **strict negative feature gates** when the target architecture is `sm_75` or `compute_75`. The gate runs in two stages:
 
-1.  **IR scan** — before target selection, the emitted `.ll` is scanned for forbidden intrinsic families by the `contains_*` helpers in `crates/mir-importer/src/pipeline.rs`. The result is collapsed into a `DetectedFeatures` value.
+1.  **IR scan** — before target selection, the emitted `.ll` is scanned for forbidden intrinsic families by the `contains_*` helpers in `crates/mir-importer/src/pipeline/target_resolution.rs`. The result is collapsed into a `DetectedFeatures` value.
 2.  **Capability check** — if the resolved target is `sm_75` / `compute_75` and `detected != DetectedFeatures::Basic`, compilation is aborted with a human-readable error naming both the target and the offending feature.
 
 Gated feature families (all SM90+ unless noted):

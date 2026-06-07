@@ -416,4 +416,94 @@ define void @kernel() {
         assert!(err.contains("Wgmma"));
         let _ = fs::remove_file(path);
     }
+
+    /// The four intrinsic families that the gate is supposed to reject on
+    /// sm_75 must each be detectable from realistic LLVM IR snippets. This
+    /// is the test matrix a CI run on a stock runner (no GPU, no `llc`)
+    /// can lock in for the `cuda-oxide-book/compiler/sm75-support.md`
+    /// "Verification" section.
+    #[test]
+    fn test_sm75_gate_full_chain_for_each_intrinsic_family() {
+        // Each entry is a (intrinsic substring, expected DetectedFeatures).
+        // A regression in any detector would flip the assertion below.
+        let cases: &[(&str, DetectedFeatures)] = &[
+            ("call void @llvm.nvvm.wgmma.mma_async(...)", DetectedFeatures::Wgmma),
+            (
+                "call void @llvm.nvvm.cp.async.bulk.tensor.g2s.tile(...)",
+                DetectedFeatures::Tma,
+            ),
+            (
+                "call void @llvm.nvvm.tcgen05.alloc(...)",
+                DetectedFeatures::Blackwell,
+            ),
+            (
+                "%id = call i32 @llvm.nvvm.read.ptx.sreg.cluster_ctaid()",
+                DetectedFeatures::Cluster,
+            ),
+        ];
+
+        for (snippet, expected) in cases {
+            let path = write_temp_ll("family", snippet);
+            let detected = detect_features(&path);
+            assert_eq!(
+                detected, *expected,
+                "snippet {snippet:?} must detect as {expected:?}, got {detected:?}"
+            );
+
+            // With the IR's own detected target, the gate must pass through.
+            let auto_target = select_target(detected);
+            assert!(
+                check_target_compat(auto_target, detected).is_ok(),
+                "auto-selected target {auto_target} must accept {detected:?}"
+            );
+
+            // Forcing sm_75 must always fire the gate for these families.
+            let err = check_target_compat("sm_75", detected)
+                .expect_err(&format!("sm_75 must reject {detected:?}"));
+            assert!(err.contains("sm_75"), "error must name the target: {err}");
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// `tma_copy` (the example used in the doc's "Verification" section) emits
+    /// plain TMA — not multicast — so it must collapse to `Tma`, not
+    /// `TmaMulticast`. If the TMA detectors ever flip priority or substring
+    /// matching drifts, the doc's `cargo oxide run tma_copy --arch sm_75`
+    /// expected error would no longer match.
+    #[test]
+    fn test_sm75_gate_doc_verification_tma_copy_uses_plain_tma() {
+        // A representative TMA-but-not-multicast snippet. The use_cta_mask
+        // argument is `i1 0` (false), so multicast detection must NOT fire.
+        let path = write_temp_ll(
+            "tma_copy_doc",
+            r#"
+declare void @llvm.nvvm.cp.async.bulk.tensor.g2s.tile(
+  i32, i1, i1, i64, i64, i64, i64, i64, ptr, ptr
+) #0
+define void @kernel(ptr %dst, ptr %src) {
+  call void @llvm.nvvm.cp.async.bulk.tensor.g2s.tile(
+    i32 0, i1 0, i1 false,
+    i64 0, i64 0, i64 0, i64 0, i64 0,
+    ptr %src, ptr %dst
+  )
+  ret void
+}
+"#,
+        );
+        let detected = detect_features(&path);
+        assert_eq!(
+            detected,
+            DetectedFeatures::Tma,
+            "tma_copy IR must detect as Tma, got {detected:?}"
+        );
+        let err = check_target_compat("sm_75", detected).unwrap_err();
+        // The doc claims: "Architecture sm_75 does not support detected
+        // advanced features: Tma". Pin the exact error string so the
+        // doc and the code cannot drift.
+        assert!(
+            err.contains("Architecture sm_75 does not support detected advanced features: Tma"),
+            "error must match the doc's expected message: {err}"
+        );
+        let _ = fs::remove_file(path);
+    }
 }
