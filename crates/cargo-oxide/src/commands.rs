@@ -1315,9 +1315,11 @@ fn apply_output_mode(cmd: &mut Command, emit_nvvm_ir: bool, arch: Option<&str>) 
 /// # Why this is needed even with the backend default
 ///
 /// The backend's `select_target` picks the minimum `sm_XX` the IR requires.
-/// `Basic → sm_80` is a fine *compilation* baseline, but PTX for `sm_80` will
-/// not load on a Turing (`sm_75`) GPU because the JIT refuses
-/// forward-incompatible PTX. Detecting the host CC in `run` keeps the
+/// `Basic → sm_75` is the broadest *compilation* baseline the toolchain
+/// supports, but a user kernel may have bumped the resolved target to
+/// `sm_90` (Cluster), `sm_100` (TMA), or `sm_100a` (Blackwell). PTX for
+/// any of those will fail to load on a host GPU whose compute capability
+/// is older than the target. Detecting the host CC in `run` keeps the
 /// generated module loadable on the actual hardware that will execute it.
 ///
 /// # When this returns `None`

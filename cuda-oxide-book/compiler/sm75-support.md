@@ -5,7 +5,7 @@ This document outlines the support for Turing architecture (`sm_75` / compute ca
 ## 1. Scope & Compilation Baseline
 
 *   **Compilation Default**: Basic kernels compiled without target overrides default to `sm_75`. Because `sm_75` is the oldest supported virtual architecture in this toolchain, compiling with `sm_75` by default ensures **maximum JIT compatibility** across all subsequent architectures (Ampere `sm_80`, Ada `sm_89`, Hopper `sm_90`, Blackwell `sm_100`).
-*   **Run Auto-detection**: `cargo oxide run` automatically detects if the host GPU is `sm_75` (compute capability 7.5) and sets the `CUDA_OXIDE_TARGET` variable dynamically to match.
+*   **Run Auto-detection**: `cargo oxide run` automatically detects if the host GPU is `sm_75` (compute capability 7.5) and sets the `CUDA_OXIDE_TARGET` variable dynamically to match. Implemented in `crates/cargo-oxide/src/commands.rs::detect_run_target_arch`, which reads `cuda_core::CudaContext::compute_capability()` for device 0. Falls through to the backend's `select_target` default when no GPU is available (e.g. CI runners).
 
 ## 2. Supported Baseline Features
 

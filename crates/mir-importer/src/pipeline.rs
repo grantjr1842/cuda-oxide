@@ -28,13 +28,21 @@
 //! | tcgen05/TMEM      | sm_100a   | Blackwell datacenter |
 //! | TMA multicast     | sm_100a   | Blackwell datacenter |
 //! | WGMMA             | sm_90a    | Hopper only          |
-//! | TMA/mbarrier      | sm_100    | Hopper+ compatible   |
+//! | TMA/mbarrier      | sm_100    | Hopper+ / Blackwell-base |
 //! | Basic CUDA        | sm_75     | Turing+ (max compat) |
+//!
+//! TMA is split into two detected variants: `TmaMulticast` (the
+//! `use_cta_mask` form, requires Blackwell's arch-specific extensions and
+//! lowers to `sm_100a`) and `Tma` (everything else, which compiles cleanly
+//! to `sm_100` and runs on both Hopper and Blackwell-base). The `a` suffix
+//! is reserved for features that cannot be expressed on the base arch.
 //!
 //! Override with `CUDA_OXIDE_TARGET=<target>` environment variable.
 
 use pliron::common_traits::Verify;
 use rustc_public::mir::mono::Instance;
+
+mod target_resolution;
 
 /// A function collected for GPU compilation.
 ///
@@ -646,168 +654,6 @@ fn export_llvm_ir(
     Ok(llvm_ir)
 }
 
-/// Checks for WGMMA instructions (Hopper sm_90a only, NOT forward-compatible).
-///
-/// WGMMA (Warpgroup Matrix Multiply-Accumulate) requires sm_90a specifically.
-/// These are NOT forward-compatible - only work on H100/H200.
-fn contains_wgmma_features(ll_path: &Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(ll_path) {
-        contents.contains("wgmma.fence")
-            || contents.contains("wgmma.commit_group")
-            || contents.contains("wgmma.wait_group")
-            || contents.contains("wgmma.mma_async")
-    } else {
-        false
-    }
-}
-
-/// Checks for Thread Block Cluster instructions (sm_90+).
-///
-/// Cluster features require Hopper (sm_90) or newer:
-/// - Cluster special registers (%cluster_ctaid, %cluster_nctaid)
-/// - Cluster synchronization (cluster.sync)
-/// - Distributed shared memory (mapa.shared::cluster)
-fn contains_cluster_features(ll_path: &Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(ll_path) {
-        // Cluster special registers
-        contents.contains("cluster_ctaid")
-            || contents.contains("cluster_nctaid")
-            // Cluster synchronization
-            || contents.contains("cluster.sync")
-            // Distributed shared memory
-            || contents.contains("mapa.shared::cluster")
-    } else {
-        false
-    }
-}
-
-/// Checks for TMA/mbarrier instructions (Hopper+ compatible with Blackwell).
-///
-/// These instructions work on BOTH Hopper and Blackwell:
-/// - TMA: Tensor Memory Accelerator bulk copies
-/// - mbarrier: Async hardware barriers with transaction tracking
-///
-/// Use sm_90 (not sm_90a) for forward compatibility with sm_120 (Blackwell).
-fn contains_tma_features(ll_path: &Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(ll_path) {
-        // TMA instructions
-        contents.contains("cp.async.bulk.tensor")
-            // mbarrier with transaction tracking (Hopper+)
-            || contents.contains("mbarrier.arrive.expect_tx")
-            || contents.contains("mbarrier.try_wait")
-            // Proxy fence for async operations
-            || contents.contains("fence.proxy.async")
-    } else {
-        false
-    }
-}
-/// Checks for Blackwell tcgen05 instructions (sm_100a+).
-///
-/// These instructions require sm_100a/sm_120a (Blackwell) or newer:
-/// - tcgen05: Tensor Core Gen 5 (TMEM allocation, MMA, sync primitives)
-///
-/// Key differences from Hopper:
-/// - tcgen05 MMA is single-thread (vs WGMMA's 128 threads)
-/// - Uses Tensor Memory (TMEM) instead of registers
-/// - Different synchronization model (mbarrier-based)
-fn contains_blackwell_features(ll_path: &Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(ll_path) {
-        // tcgen05 TMEM allocation/deallocation
-        contents.contains("tcgen05.alloc")
-            || contents.contains("tcgen05.dealloc")
-            || contents.contains("tcgen05.relinquish_alloc_permit")
-            // tcgen05 synchronization
-            || contents.contains("tcgen05.fence")
-            || contents.contains("tcgen05.commit")
-            // tcgen05 MMA instructions (ws and non-ws/cta_group forms)
-            || contents.contains("tcgen05.mma")
-            // tcgen05 data movement
-            || contents.contains("tcgen05.cp")
-    } else {
-        false
-    }
-}
-
-/// Checks for TMA multicast in LLVM IR (requires sm_100a).
-///
-/// TMA multicast (`cp.async.bulk.tensor...multicast::cluster`) is an
-/// architecture-specific extension that broadcasts a tile to all CTAs in a
-/// cluster. In the LLVM intrinsic, this is controlled by the `use_cta_mask`
-/// parameter (second-to-last i1 argument) being set to true.
-fn contains_tma_multicast(ll_path: &Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(ll_path) {
-        contents
-            .lines()
-            .any(|line| line.contains("g2s.tile") && line.contains(", i1 1, i1"))
-    } else {
-        false
-    }
-}
-
-/// GPU features detected in LLVM IR that determine target selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DetectedFeatures {
-    /// tcgen05/TMEM (Blackwell datacenter, sm_100a).
-    Blackwell,
-    /// TMA multicast (arch-specific extension, sm_100a).
-    TmaMulticast,
-    /// WGMMA (Hopper only, sm_90a - NOT forward-compatible).
-    Wgmma,
-    /// TMA/mbarrier (Hopper+ compatible).
-    Tma,
-    /// Thread Block Clusters (sm_90+, forward-compatible).
-    Cluster,
-    /// No special features (maximum compatibility, sm_80).
-    Basic,
-}
-
-/// Maps detected features to GPU target architecture.
-fn select_target(features: DetectedFeatures) -> &'static str {
-    match features {
-        DetectedFeatures::Blackwell => "sm_100a",
-        DetectedFeatures::TmaMulticast => "sm_100a",
-        DetectedFeatures::Wgmma => "sm_90a",
-        // TMA needs PTX 8.0+ which requires sm_90a or sm_100+.
-        // sm_90a is NOT forward-compatible to Blackwell, so use sm_100 which:
-        // - Generates PTX 8.6 (supports all TMA features)
-        // - Works on all Blackwell variants (sm_100, sm_120)
-        // - Hopper users can override with CUDA_OXIDE_TARGET=sm_90a
-        DetectedFeatures::Tma => "sm_100",
-        // Cluster features require sm_90+ but are forward-compatible.
-        // Use sm_90 for Hopper compatibility, works on Blackwell too.
-        DetectedFeatures::Cluster => "sm_90",
-        DetectedFeatures::Basic => "sm_75",
-    }
-}
-
-/// Returns true if the target architecture is the Turing baseline.
-///
-/// Both `sm_75` (SASS) and `compute_75` (PTX virtual arch) qualify, since the
-/// gate must fire regardless of which form the user passed via
-/// `CUDA_OXIDE_TARGET` or the auto-detect path.
-fn is_sm75_target(target: &str) -> bool {
-    target == "sm_75" || target == "compute_75"
-}
-
-/// Validates that the resolved target architecture is compatible with the
-/// features detected in the IR.
-///
-/// On Turing (`sm_75` / `compute_75`), only kernels with no advanced features
-/// (`DetectedFeatures::Basic`) are allowed. The IR-scanning detectors in
-/// `contains_*` populate `detected`, so this gate is grounded in actual
-/// intrinsic presence — not symbol-name heuristics.
-///
-/// Returns `Ok(())` if the target/detected pair is compatible, or `Err(msg)`
-/// with a human-readable reason otherwise.
-fn check_target_compat(target: &str, detected: DetectedFeatures) -> Result<(), String> {
-    if is_sm75_target(target) && detected != DetectedFeatures::Basic {
-        return Err(format!(
-            "Architecture {target} does not support detected advanced features: {detected:?}"
-        ));
-    }
-    Ok(())
-}
-
 /// Runs LLVM's middle-end (`opt -O2`) on the emitted IR before `llc`.
 ///
 /// This is what consumes the per-op ABI alignment we emit: the
@@ -899,30 +745,18 @@ fn generate_ptx(ll_path: &Path, ptx_path: &Path) -> Result<String, PipelineError
     // Check for user-specified target override
     let target_override = std::env::var("CUDA_OXIDE_TARGET").ok();
 
-    // Detect features (order matters: most specific first)
-    let detected = match (
-        contains_blackwell_features(ll_path),
-        contains_tma_multicast(ll_path),
-        contains_wgmma_features(ll_path),
-        contains_tma_features(ll_path),
-        contains_cluster_features(ll_path),
-    ) {
-        (true, _, _, _, _) => DetectedFeatures::Blackwell,
-        (_, true, _, _, _) => DetectedFeatures::TmaMulticast,
-        (_, _, true, _, _) => DetectedFeatures::Wgmma,
-        (_, _, _, true, _) => DetectedFeatures::Tma,
-        (_, _, _, _, true) => DetectedFeatures::Cluster,
-        _ => DetectedFeatures::Basic,
-    };
+    // Detect features (order matters: most specific first). All target
+    // resolution logic lives in `target_resolution`.
+    let detected = target_resolution::detect_features(ll_path);
 
     // Use override if provided, otherwise auto-detect
     let target = match &target_override {
         Some(t) => t.as_str(),
-        None => select_target(detected),
+        None => target_resolution::select_target(detected),
     };
 
     // Target capability gate for SM75
-    if let Err(reason) = check_target_compat(target, detected) {
+    if let Err(reason) = target_resolution::check_target_compat(target, detected) {
         return Err(PipelineError::PtxGeneration(reason));
     }
 
@@ -1137,17 +971,6 @@ impl std::error::Error for PipelineError {}
 mod tests {
     use super::*;
     use llvm_export::export::AsDeviceExtern;
-    use std::{fs, path::PathBuf};
-
-    fn write_temp_ll(name: &str, contents: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "cuda_oxide_mir_importer_{}_{}.ll",
-            std::process::id(),
-            name
-        ));
-        fs::write(&path, contents).expect("write temp LLVM IR");
-        path
-    }
 
     #[test]
     fn test_pipeline_config_default_values() {
@@ -1182,122 +1005,6 @@ mod tests {
         assert!(!exported.attrs.is_pure);
         assert!(exported.attrs.is_readonly);
     }
-
-    #[test]
-    fn test_feature_detection_reads_llvm_ir_snippets() {
-        let path = write_temp_ll(
-            "features",
-            r#"
-                call void asm sideeffect "wgmma.fence.sync.aligned", ""()
-                call void @llvm.nvvm.tcgen05.alloc()
-                call void asm sideeffect "cluster.sync.aligned", ""()
-                call void asm sideeffect "cp.async.bulk.tensor.2d.shared::cluster.global", ""()
-            "#,
-        );
-
-        assert!(contains_wgmma_features(&path));
-        assert!(contains_blackwell_features(&path));
-        assert!(contains_cluster_features(&path));
-        assert!(contains_tma_features(&path));
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn test_tma_multicast_detection_requires_cta_mask() {
-        let multicast = write_temp_ll(
-            "tma_multicast",
-            "call void @llvm.nvvm.cp.async.bulk.tensor.g2s.tile(i32 0, i1 1, i1 false)",
-        );
-        let unicast = write_temp_ll(
-            "tma_unicast",
-            "call void @llvm.nvvm.cp.async.bulk.tensor.g2s.tile(i32 0, i1 0, i1 false)",
-        );
-
-        assert!(contains_tma_multicast(&multicast));
-        assert!(!contains_tma_multicast(&unicast));
-
-        let _ = fs::remove_file(multicast);
-        let _ = fs::remove_file(unicast);
-    }
-
-    #[test]
-    fn test_select_target_prefers_required_architecture() {
-        assert_eq!(select_target(DetectedFeatures::Blackwell), "sm_100a");
-        assert_eq!(select_target(DetectedFeatures::TmaMulticast), "sm_100a");
-        assert_eq!(select_target(DetectedFeatures::Wgmma), "sm_90a");
-        assert_eq!(select_target(DetectedFeatures::Tma), "sm_100");
-        assert_eq!(select_target(DetectedFeatures::Cluster), "sm_90");
-        assert_eq!(select_target(DetectedFeatures::Basic), "sm_75");
-    }
-
-    #[test]
-    fn test_sm75_gate_accepts_basic_on_sm75() {
-        assert!(check_target_compat("sm_75", DetectedFeatures::Basic).is_ok());
-        assert!(check_target_compat("compute_75", DetectedFeatures::Basic).is_ok());
-    }
-
-    #[test]
-    fn test_sm75_gate_rejects_advanced_features() {
-        assert!(check_target_compat("sm_75", DetectedFeatures::Wgmma).is_err());
-        assert!(check_target_compat("sm_75", DetectedFeatures::Tma).is_err());
-        assert!(check_target_compat("sm_75", DetectedFeatures::TmaMulticast).is_err());
-        assert!(check_target_compat("sm_75", DetectedFeatures::Cluster).is_err());
-        assert!(check_target_compat("sm_75", DetectedFeatures::Blackwell).is_err());
-        // compute_75 (PTX virtual arch) is gated the same way as sm_75.
-        assert!(check_target_compat("compute_75", DetectedFeatures::Wgmma).is_err());
-    }
-
-    #[test]
-    fn test_sm75_gate_passes_through_other_targets() {
-        // Targets >= sm_80 are not gated by the sm_75 rule; advanced features
-        // are allowed because the architecture natively supports them.
-        assert!(check_target_compat("sm_80", DetectedFeatures::Wgmma).is_ok());
-        assert!(check_target_compat("sm_90", DetectedFeatures::Wgmma).is_ok());
-        assert!(check_target_compat("sm_90a", DetectedFeatures::Wgmma).is_ok());
-        assert!(check_target_compat("sm_100", DetectedFeatures::Tma).is_ok());
-        assert!(check_target_compat("sm_100a", DetectedFeatures::Blackwell).is_ok());
-    }
-
-    #[test]
-    fn test_sm75_gate_error_message_mentions_target_and_feature() {
-        let err = check_target_compat("sm_75", DetectedFeatures::Wgmma).unwrap_err();
-        assert!(err.contains("sm_75"), "error must name the target: {err}");
-        assert!(err.contains("Wgmma"), "error must name the offending feature: {err}");
-    }
-
-    /// End-to-end: a `.ll` file containing real WGMMA intrinsics, fed through
-    /// the IR-scanning detectors and `select_target`, must produce a target
-    /// that the gate rejects. This is the test the user actually cares about:
-    /// "if my kernel emits wgmma, will the sm_75 gate catch it?"
-    #[test]
-    fn test_sm75_gate_catches_real_wgmma_intrinsic() {
-        let path = write_temp_ll(
-            "wgmma_sm75",
-            r#"
-declare void @llvm.nvvm.wgmma.mma_async(...) #0
-define void @kernel() {
-  call void @llvm.nvvm.wgmma.mma_async(...)
-  ret void
-}
-"#,
-        );
-        assert!(
-            contains_wgmma_features(&path),
-            "WGMMA intrinsic must be detected in the IR"
-        );
-        let detected = DetectedFeatures::Wgmma;
-        let target = select_target(detected);
-        // Auto-detect picks sm_90a for WGMMA, so without an override the gate
-        // would not fire — that's correct. With the sm_75 override, the gate
-        // must fire and produce an error referencing the detected feature.
-        assert_eq!(target, "sm_90a", "WGMMA must auto-select sm_90a");
-        assert!(check_target_compat(target, detected).is_ok());
-        let err = check_target_compat("sm_75", detected).unwrap_err();
-        assert!(err.contains("Wgmma"));
-        let _ = fs::remove_file(path);
-    }
-
 
     /// Build a minimal LLVM dialect module containing a single function
     /// declaration named `name`. The module is intentionally empty otherwise;
