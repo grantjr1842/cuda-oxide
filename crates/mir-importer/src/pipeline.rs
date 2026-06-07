@@ -29,7 +29,7 @@
 //! | TMA multicast     | sm_100a   | Blackwell datacenter |
 //! | WGMMA             | sm_90a    | Hopper only          |
 //! | TMA/mbarrier      | sm_100    | Hopper+ compatible   |
-//! | Basic CUDA        | sm_80     | Ampere+ (max compat) |
+//! | Basic CUDA        | sm_75     | Turing+ (max compat) |
 //!
 //! Override with `CUDA_OXIDE_TARGET=<target>` environment variable.
 
@@ -780,6 +780,34 @@ fn select_target(features: DetectedFeatures) -> &'static str {
     }
 }
 
+/// Returns true if the target architecture is the Turing baseline.
+///
+/// Both `sm_75` (SASS) and `compute_75` (PTX virtual arch) qualify, since the
+/// gate must fire regardless of which form the user passed via
+/// `CUDA_OXIDE_TARGET` or the auto-detect path.
+fn is_sm75_target(target: &str) -> bool {
+    target == "sm_75" || target == "compute_75"
+}
+
+/// Validates that the resolved target architecture is compatible with the
+/// features detected in the IR.
+///
+/// On Turing (`sm_75` / `compute_75`), only kernels with no advanced features
+/// (`DetectedFeatures::Basic`) are allowed. The IR-scanning detectors in
+/// `contains_*` populate `detected`, so this gate is grounded in actual
+/// intrinsic presence — not symbol-name heuristics.
+///
+/// Returns `Ok(())` if the target/detected pair is compatible, or `Err(msg)`
+/// with a human-readable reason otherwise.
+fn check_target_compat(target: &str, detected: DetectedFeatures) -> Result<(), String> {
+    if is_sm75_target(target) && detected != DetectedFeatures::Basic {
+        return Err(format!(
+            "Architecture {target} does not support detected advanced features: {detected:?}"
+        ));
+    }
+    Ok(())
+}
+
 /// Runs LLVM's middle-end (`opt -O2`) on the emitted IR before `llc`.
 ///
 /// This is what consumes the per-op ABI alignment we emit: the
@@ -894,10 +922,8 @@ fn generate_ptx(ll_path: &Path, ptx_path: &Path) -> Result<String, PipelineError
     };
 
     // Target capability gate for SM75
-    if (target == "sm_75" || target == "compute_75") && detected != DetectedFeatures::Basic {
-        return Err(PipelineError::PtxGeneration(format!(
-            "Architecture {target} does not support detected advanced features: {detected:?}"
-        )));
+    if let Err(reason) = check_target_compat(target, detected) {
+        return Err(PipelineError::PtxGeneration(reason));
     }
 
     // Log target selection
@@ -1206,16 +1232,70 @@ mod tests {
     }
 
     #[test]
-    fn test_sm75_negative_gating_logic() {
-        let is_valid = |target: &str, detected: DetectedFeatures| {
-            !((target == "sm_75" || target == "compute_75") && detected != DetectedFeatures::Basic)
-        };
-        assert!(is_valid("sm_75", DetectedFeatures::Basic));
-        assert!(!is_valid("sm_75", DetectedFeatures::Wgmma));
-        assert!(!is_valid("sm_75", DetectedFeatures::Tma));
-        assert!(!is_valid("sm_75", DetectedFeatures::Cluster));
-        assert!(!is_valid("sm_75", DetectedFeatures::Blackwell));
-        assert!(is_valid("sm_80", DetectedFeatures::Wgmma));
+    fn test_sm75_gate_accepts_basic_on_sm75() {
+        assert!(check_target_compat("sm_75", DetectedFeatures::Basic).is_ok());
+        assert!(check_target_compat("compute_75", DetectedFeatures::Basic).is_ok());
+    }
+
+    #[test]
+    fn test_sm75_gate_rejects_advanced_features() {
+        assert!(check_target_compat("sm_75", DetectedFeatures::Wgmma).is_err());
+        assert!(check_target_compat("sm_75", DetectedFeatures::Tma).is_err());
+        assert!(check_target_compat("sm_75", DetectedFeatures::TmaMulticast).is_err());
+        assert!(check_target_compat("sm_75", DetectedFeatures::Cluster).is_err());
+        assert!(check_target_compat("sm_75", DetectedFeatures::Blackwell).is_err());
+        // compute_75 (PTX virtual arch) is gated the same way as sm_75.
+        assert!(check_target_compat("compute_75", DetectedFeatures::Wgmma).is_err());
+    }
+
+    #[test]
+    fn test_sm75_gate_passes_through_other_targets() {
+        // Targets >= sm_80 are not gated by the sm_75 rule; advanced features
+        // are allowed because the architecture natively supports them.
+        assert!(check_target_compat("sm_80", DetectedFeatures::Wgmma).is_ok());
+        assert!(check_target_compat("sm_90", DetectedFeatures::Wgmma).is_ok());
+        assert!(check_target_compat("sm_90a", DetectedFeatures::Wgmma).is_ok());
+        assert!(check_target_compat("sm_100", DetectedFeatures::Tma).is_ok());
+        assert!(check_target_compat("sm_100a", DetectedFeatures::Blackwell).is_ok());
+    }
+
+    #[test]
+    fn test_sm75_gate_error_message_mentions_target_and_feature() {
+        let err = check_target_compat("sm_75", DetectedFeatures::Wgmma).unwrap_err();
+        assert!(err.contains("sm_75"), "error must name the target: {err}");
+        assert!(err.contains("Wgmma"), "error must name the offending feature: {err}");
+    }
+
+    /// End-to-end: a `.ll` file containing real WGMMA intrinsics, fed through
+    /// the IR-scanning detectors and `select_target`, must produce a target
+    /// that the gate rejects. This is the test the user actually cares about:
+    /// "if my kernel emits wgmma, will the sm_75 gate catch it?"
+    #[test]
+    fn test_sm75_gate_catches_real_wgmma_intrinsic() {
+        let path = write_temp_ll(
+            "wgmma_sm75",
+            r#"
+declare void @llvm.nvvm.wgmma.mma_async(...) #0
+define void @kernel() {
+  call void @llvm.nvvm.wgmma.mma_async(...)
+  ret void
+}
+"#,
+        );
+        assert!(
+            contains_wgmma_features(&path),
+            "WGMMA intrinsic must be detected in the IR"
+        );
+        let detected = DetectedFeatures::Wgmma;
+        let target = select_target(detected);
+        // Auto-detect picks sm_90a for WGMMA, so without an override the gate
+        // would not fire — that's correct. With the sm_75 override, the gate
+        // must fire and produce an error referencing the detected feature.
+        assert_eq!(target, "sm_90a", "WGMMA must auto-select sm_90a");
+        assert!(check_target_compat(target, detected).is_ok());
+        let err = check_target_compat("sm_75", detected).unwrap_err();
+        assert!(err.contains("Wgmma"));
+        let _ = fs::remove_file(path);
     }
 
 

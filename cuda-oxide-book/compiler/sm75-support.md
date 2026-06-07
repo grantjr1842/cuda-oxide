@@ -21,12 +21,20 @@ The following CUDA core features are fully supported and validated on `sm_75`:
 
 ## 3. Negative Gating & Gated Features
 
-To prevent compilation leaks and JIT loading crashes on Turing hardware, the compiler enforces **strict negative feature gates** when the target architecture is `sm_75` or `compute_75`. If the intermediate LLVM IR contains any advanced instructions belonging to newer architectures, compilation is aborted:
+To prevent compilation leaks and JIT loading crashes on Turing hardware, the compiler enforces **strict negative feature gates** when the target architecture is `sm_75` or `compute_75`. The gate runs in two stages:
 
-*   **TMA (Tensor Memory Accelerator)**: Gated on SM90+. Rejects `llvm.nvvm.cp.async.bulk.tensor` operations.
-*   **WGMMA (Warpgroup MMA)**: Gated on SM90+. Rejects `llvm.nvvm.wgmma` operations.
-*   **tcgen05 / TMEM**: Gated on SM100+. Rejects `tcgen05` operations.
-*   **Thread Block Clusters**: Gated on SM90+. Rejects cluster registers or cluster-launch attributes.
+1.  **IR scan** — before target selection, the emitted `.ll` is scanned for forbidden intrinsic families by the `contains_*` helpers in `crates/mir-importer/src/pipeline.rs`. The result is collapsed into a `DetectedFeatures` value.
+2.  **Capability check** — if the resolved target is `sm_75` / `compute_75` and `detected != DetectedFeatures::Basic`, compilation is aborted with a human-readable error naming both the target and the offending feature.
+
+Gated feature families (all SM90+ unless noted):
+
+*   **TMA (Tensor Memory Accelerator)** (SM90+): Rejects `cp.async.bulk.tensor` and `mbarrier.*` / `fence.proxy.async` patterns.
+*   **TMA Multicast** (SM100a): Rejects the `use_cta_mask` form of `cp.async.bulk.tensor.g2s.tile`.
+*   **WGMMA (Warpgroup MMA)** (SM90a): Rejects `wgmma.fence` / `wgmma.commit_group` / `wgmma.wait_group` / `wgmma.mma_async`.
+*   **tcgen05 / TMEM** (SM100a): Rejects `tcgen05.alloc` / `tcgen05.mma` / `tcgen05.cp` / etc.
+*   **Thread Block Clusters** (SM90+): Rejects `cluster_ctaid` / `cluster.sync` / `mapa.shared::cluster`.
+
+The `CUDA_OXIDE_TARGET=sm_75` override is the primary lever for users who want to force the gate and prove their kernel is Turing-clean.
 
 ## 4. Verification
 
