@@ -354,6 +354,12 @@ fn cuda_roots() -> Vec<PathBuf> {
     }
     roots.push(PathBuf::from("/usr/local/cuda"));
     roots.push(PathBuf::from("/opt/cuda"));
+    // Debian/Ubuntu CUDA packages split the toolkit across
+    // `/usr/lib/cuda` (nvvm + headers) and `/usr/lib/nvidia-cuda-toolkit`
+    // (libdevice). The official NVIDIA runfile uses `/usr/local/cuda`
+    // as the single root, so probe those last as a tiebreaker.
+    roots.push(PathBuf::from("/usr/lib/cuda"));
+    roots.push(PathBuf::from("/usr/lib/nvidia-cuda-toolkit"));
     roots
 }
 
