@@ -807,4 +807,98 @@ define void @kernel(ptr %dst, ptr %src) {
         );
         let _ = fs::remove_file(path);
     }
+
+    // =====================================================================
+    // N5 + X7: doc-honesty tests.
+    //
+    // The sm75-baseline CI workflow (.github/workflows/sm75-baseline.yml)
+    // asserts the EXACT `Architecture sm_75 does not support detected
+    // advanced features: Tma` error string for tma_copy. The same hardening
+    // needs to exist for the other detectors — cp.async, bar.warp.sync,
+    // and the new named-barrier bar.sync form (N3). If the error format
+    // or the user-facing variant label ever changes, these tests catch
+    // the drift before the doc and the code can disagree.
+    //
+    // Each test:
+    //   1. Writes a temp .ll with the detector's canonical intrinsic form.
+    //   2. Runs `detect_features` to confirm the right variant collapses.
+    //   3. Runs `check_target_compat("sm_75", ...)` to capture the error.
+    //   4. Asserts the error string matches the doc-advertised format
+    //      (`Architecture sm_75 does not support detected advanced
+    //      features: <Variant>`).
+    // =====================================================================
+
+    #[test]
+    fn test_cp_async_gate_produces_doc_advertised_error() {
+        // N5: the cp.async non-bulk form is the canonical Ampere async
+        // example. The doc (sm75-support.md §3) says: "Rejects the
+        // non-bulk form of cp.async, cp.async.commit_group /
+        // cp.async.wait_group, and bar.warp.sync." The user-facing
+        // error must name the variant, not the underlying intrinsic.
+        let path = write_temp_ll(
+            "cp_async_doc",
+            "call void @llvm.nvvm.cp.async.cg.shared.global(...)",
+        );
+        let detected = detect_features(&path);
+        assert_eq!(
+            detected,
+            DetectedFeatures::AmpereAsync,
+            "cp.async must collapse to AmpereAsync"
+        );
+        let err = check_target_compat("sm_75", detected).unwrap_err();
+        assert!(
+            err.contains("Architecture sm_75 does not support detected advanced features: AmpereAsync"),
+            "cp.async gate error must match doc format, got: {err}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_bar_warp_sync_gate_produces_doc_advertised_error() {
+        // N5: bar.warp.sync (CoalescedThreads::sync, WarpTile<N>::sync
+        // backing) is the other half of the §3 "Ampere async-copy +
+        // warp barriers" family. Same error string format expected.
+        let path = write_temp_ll(
+            "bar_warp_sync_doc",
+            "call void @llvm.nvvm.bar.warp.sync(i32 -1)",
+        );
+        let detected = detect_features(&path);
+        assert_eq!(
+            detected,
+            DetectedFeatures::AmpereAsync,
+            "bar.warp.sync must collapse to AmpereAsync"
+        );
+        let err = check_target_compat("sm_75", detected).unwrap_err();
+        assert!(
+            err.contains("Architecture sm_75 does not support detected advanced features: AmpereAsync"),
+            "bar.warp.sync gate error must match doc format, got: {err}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_named_barrier_bar_sync_gate_produces_doc_advertised_error() {
+        // X7: the new N3 named-barrier detector must produce the same
+        // error string format as cp.async and bar.warp.sync (it folds
+        // into the same AmpereAsync variant). This test pins the
+        // contract so the doc-honesty claim in §3 holds for all three
+        // members of the "Ampere async-copy + warp barriers" family.
+        let path = write_temp_ll(
+            "named_barrier_doc",
+            // Non-zero-index form (the PTX literal `bar.sync 1, "name"`).
+            "call void asm sideeffect \"bar.sync 1, \\\"\\\\24named_bar\\\"\", \"\"() ;",
+        );
+        let detected = detect_features(&path);
+        assert_eq!(
+            detected,
+            DetectedFeatures::AmpereAsync,
+            "named-barrier bar.sync must collapse to AmpereAsync"
+        );
+        let err = check_target_compat("sm_75", detected).unwrap_err();
+        assert!(
+            err.contains("Architecture sm_75 does not support detected advanced features: AmpereAsync"),
+            "named-barrier gate error must match doc format, got: {err}"
+        );
+        let _ = fs::remove_file(path);
+    }
 }
