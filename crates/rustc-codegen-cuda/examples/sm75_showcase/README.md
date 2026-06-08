@@ -45,10 +45,10 @@ To prevent compilation leaks and JIT crashes on Turing hardware, the compiler en
 
 You can test this by forcing the compiler to compile the kernel with advanced (Ampere+) features enabled:
 
-### A. Trigger AmpereAsync gate (Warp Barrier / cp.async)
-By passing `--features trigger_gate_failure`, the code path containing `fence_proxy_async_shared_cta` (which uses `cp.async` and `bar.warp.sync` under the hood) is compiled:
+### A. Trigger AmpereAsync gate (`bar.warp.sync`)
+By passing `--features trigger_ampere_gate`, the code path containing `warp::sync_mask` (which lowers to the `bar.warp.sync` PTX instruction, an Ampere+ feature) is compiled:
 ```bash
-cargo oxide run sm75_showcase --arch sm_75 --features trigger_gate_failure
+cargo oxide run sm75_showcase --arch sm_75 --features trigger_ampere_gate
 ```
 
 **Expected Compilation Failure:**

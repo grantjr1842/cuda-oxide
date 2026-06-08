@@ -89,13 +89,17 @@ mod kernels {
         // 4. Showcase gate triggers (to verify negative feature gating)
         #[cfg(feature = "trigger_ampere_gate")]
         {
-            // Triggers "AmpereAsync" gate since bar.warp.sync is an Ampere+ feature
+            // Triggers "AmpereAsync" gate: warp::sync_mask lowers to
+            // @llvm.nvvm.bar.warp.sync (PTX `bar.warp.sync`), which is
+            // an sm_80+ (Ampere) feature. Rejected on sm_75.
             warp::sync_mask(0xFFFFFFFF);
         }
 
         #[cfg(feature = "trigger_tma_gate")]
         {
-            // Triggers "Tma" gate since fence.proxy.async is a Hopper+ feature
+            // Triggers "Tma" gate: fence_proxy_async_shared_cta lowers to
+            // `fence.proxy.async` — a TMA bulk-form instruction that requires
+            // PTX 8.0+ (sm_100 per the current gate policy). Rejected on sm_75.
             unsafe {
                 cuda_device::barrier::fence_proxy_async_shared_cta();
             }
