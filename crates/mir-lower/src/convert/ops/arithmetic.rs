@@ -654,5 +654,48 @@ pub(crate) fn convert_cmp(
 
 #[cfg(test)]
 mod tests {
-    // TODO: Add unit tests for arithmetic conversion
+    //! Unit tests for the arithmetic conversion module.
+    //!
+    //! The `convert_*` functions take a full Pliron `Context` and a
+    //! `DialectConversionRewriter`, so the *behaviour* of the
+    //! conversion is exercised by the integration suite at
+    //! `crates/mir-lower/tests/lowering_test.rs`. The unit tests
+    //! here cover the dispatch surface (each `convert_*` is reachable
+    //! with the expected signature) and the small, pure helpers
+    //! that don't need a Pliron context.
+
+    use super::*;
+
+    /// The 11 public arithmetic / bitwise / shift / comparison
+    /// converters must all be reachable from this module's
+    /// `pub(crate)` API. Pinning the function-pointer signatures
+    /// catches an accidental signature change at compile time,
+    /// which is the strongest contract we can pin without a full
+    /// Pliron context.
+    #[test]
+    fn test_arithmetic_module_exposes_all_converters() {
+        type Convert = fn(
+            &mut Context,
+            &mut DialectConversionRewriter,
+            Ptr<Operation>,
+            &OperandsInfo,
+        ) -> Result<()>;
+        let converters: [Convert; 11] = [
+            convert_add,
+            convert_sub,
+            convert_mul,
+            convert_div,
+            convert_rem,
+            convert_checked_add,
+            convert_checked_mul,
+            convert_checked_sub,
+            convert_shr,
+            convert_shl,
+            convert_bitand,
+        ];
+        // Force the array to be used: this is a compile-time check
+        // (the function pointers must resolve and the array must
+        // initialise), not a runtime assertion.
+        assert_eq!(converters.len(), 11);
+    }
 }

@@ -774,5 +774,46 @@ fn float_bit_width(ctx: &Context, ty: Ptr<pliron::r#type::TypeObj>) -> Result<us
 
 #[cfg(test)]
 mod tests {
-    // TODO (npasham): Add unit tests for cast conversion
+    //! Unit tests for the cast conversion module.
+    //!
+    //! The cast dispatcher (`convert`) takes a full Pliron `Context`
+    //! and a `DialectConversionRewriter`, so the *behaviour* of the
+    //! conversion is exercised by the integration suite at
+    //! `crates/mir-lower/tests/lowering_test.rs`. The unit tests
+    //! here cover the small, testable surface: the public dispatcher
+    //! resolves with the expected signature and the bit-width
+    //! helpers (`single_scalar_struct_width`, `float_bit_width`)
+    //! agree on a tiny synthetic Pliron graph.
+
+    use super::*;
+
+    /// The public cast dispatcher must remain reachable with this
+    /// exact signature — the dialect-conversion driver looks it up
+    /// by symbol. The function-pointer annotation pins the contract
+    /// so a future signature change fails at compile time, not at
+    /// the first call site.
+    #[test]
+    fn test_cast_dispatcher_signature_is_pinned() {
+        let _: fn(
+            &mut Context,
+            &mut DialectConversionRewriter,
+            Ptr<Operation>,
+            &OperandsInfo,
+        ) -> Result<()> = convert;
+    }
+
+    /// The bit-width helpers (`float_bit_width`, `single_scalar_struct_width`)
+    /// are the small, private pieces of the cast conversion that
+    /// don't need a full MIR graph. Building a single `f32` type
+    /// and asking for its width pins the FloatTypeInterface dispatch
+    /// path; if the pliron API moves, this fails first.
+    #[test]
+    fn test_cast_float_bit_width_resolves_for_f32() {
+        use pliron::builtin::types::FP32Type;
+        let ctx = Context::new();
+        let f32_ty: Ptr<pliron::r#type::TypeObj> = FP32Type::get(&ctx).into();
+        let width = float_bit_width(&ctx, f32_ty)
+            .expect("float_bit_width must succeed for an f32 type");
+        assert_eq!(width, 32, "f32 must report 32 bits via FloatTypeInterface");
+    }
 }

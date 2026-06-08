@@ -837,5 +837,46 @@ pub(crate) fn convert_array_element_addr(
 
 #[cfg(test)]
 mod tests {
-    // TODO: Add unit tests for aggregate conversion
+    //! Unit tests for the aggregate conversion module.
+    //!
+    //! The aggregate converters (`convert_extract_field`,
+    //! `convert_insert_field`, `convert_construct_struct`, etc.)
+    //! take a full Pliron `Context` and a `DialectConversionRewriter`,
+    //! so the *behaviour* of the conversion is exercised by the
+    //! integration suite at `crates/mir-lower/tests/lowering_test.rs`.
+    //! The unit tests here cover the dispatch surface (each
+    //! `convert_*` is reachable with the expected signature).
+
+    use super::*;
+
+    /// The aggregate converters must all be reachable from this
+    /// module's `pub(crate)` API. Pinning the function-pointer
+    /// signatures catches an accidental signature change at compile
+    /// time, which is the strongest contract we can pin without a
+    /// full Pliron context.
+    #[test]
+    fn test_aggregate_module_exposes_all_converters() {
+        type Convert = fn(
+            &mut Context,
+            &mut DialectConversionRewriter,
+            Ptr<Operation>,
+            &OperandsInfo,
+        ) -> Result<()>;
+        let converters: [Convert; 10] = [
+            convert_extract_field,
+            convert_insert_field,
+            convert_construct_struct,
+            convert_construct_tuple,
+            convert_construct_array,
+            convert_extract_array_element,
+            convert_construct_enum,
+            convert_get_discriminant,
+            convert_enum_payload,
+            convert_field_addr,
+        ];
+        // Force the array to be used: this is a compile-time check
+        // (the function pointers must resolve and the array must
+        // initialise), not a runtime assertion.
+        assert_eq!(converters.len(), 10);
+    }
 }

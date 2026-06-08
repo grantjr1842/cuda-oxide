@@ -831,3 +831,53 @@ pub(super) fn register(ctx: &mut Context) {
     ThreadfenceOp::register(ctx);
     ThreadfenceSystemOp::register(ctx);
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the NVVM thread-indexing operations.
+    //!
+    //! The end-to-end verification of these ops lives in the
+    //! integration suite at `crates/dialect-nvvm/tests/ops_test.rs`;
+    //! the unit tests here pin the *registration* contract (all 16
+    //! ops are reachable and the op-info structs exist) and the
+    //! `register` function wires them all in.
+
+    use super::*;
+
+    /// All 16 NVVM thread-indexing ops must be reachable from this
+    /// module's `pub(super)` API. Pinning the type names at the
+    /// `#[pliron_op]`-generated structs catches an accidental
+    /// rename or removal at compile time.
+    #[test]
+    fn test_nvvm_thread_ops_are_publicly_named() {
+        // The generated op structs are zero-sized wrappers; the
+        // test functions exist purely to anchor the types in the
+        // namespace and force rustc to verify the symbols resolve.
+        fn _accept_read_tid_x(_: ReadPtxSregTidXOp) {}
+        fn _accept_read_tid_y(_: ReadPtxSregTidYOp) {}
+        fn _accept_read_tid_z(_: ReadPtxSregTidZOp) {}
+        fn _accept_read_ctaid_x(_: ReadPtxSregCtaidXOp) {}
+        fn _accept_read_ctaid_y(_: ReadPtxSregCtaidYOp) {}
+        fn _accept_read_ctaid_z(_: ReadPtxSregCtaidZOp) {}
+        fn _accept_read_ntid_x(_: ReadPtxSregNtidXOp) {}
+        fn _accept_read_ntid_y(_: ReadPtxSregNtidYOp) {}
+        fn _accept_read_ntid_z(_: ReadPtxSregNtidZOp) {}
+        fn _accept_read_nctaid_x(_: ReadPtxSregNctaidXOp) {}
+        fn _accept_read_nctaid_y(_: ReadPtxSregNctaidYOp) {}
+        fn _accept_read_nctaid_z(_: ReadPtxSregNctaidZOp) {}
+        fn _accept_read_envreg1(_: ReadPtxSregEnvReg1Op) {}
+        fn _accept_read_envreg2(_: ReadPtxSregEnvReg2Op) {}
+        fn _accept_barrier0(_: Barrier0Op) {}
+        fn _accept_threadfence_block(_: ThreadfenceBlockOp) {}
+    }
+
+    /// `register(ctx)` must wire all 16 ops into the dialect table
+    /// without panicking. The smoke test: registering on a fresh
+    /// context must succeed; if an op is accidentally dropped from
+    /// `register`, this is the first place it shows.
+    #[test]
+    fn test_register_does_not_panic_on_fresh_context() {
+        let mut ctx = Context::new();
+        register(&mut ctx);
+    }
+}

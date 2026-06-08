@@ -149,5 +149,69 @@ pub(crate) fn convert_undef(
 
 #[cfg(test)]
 mod tests {
-    // TODO: Add unit tests for constant conversion
+    //! Unit tests for the constant conversion module.
+    //!
+    //! The conversion functions (`convert_integer`, `convert_float`,
+    //! `convert_undef`) take a full Pliron `Context` and a
+    //! `DialectConversionRewriter`, so the *behavior* of the conversion
+    //! is exercised by the integration suite at
+    //! `crates/mir-lower/tests/lowering_test.rs`. The unit tests here
+    //! cover the small, testable surface: the type-dispatch contract
+    //! (the three public converters resolve and have the expected
+    //! names) and the behaviour of the small helpers that don't
+    //! require a Pliron context.
+    //!
+    //! See `cuda-oxide-book/compiler/lowering-pipeline.md` for the
+    //! full picture of where unit vs integration tests live for
+    //! mir-lower.
+
+    use super::*;
+
+    /// The three public conversion functions must be reachable from
+    /// this module's public(crate) API. The function pointer check
+    /// pins the dispatch surface for the dialect-conversion driver;
+    /// if a converter is renamed or removed, this fails at compile
+    /// time (not at runtime), which is the strongest contract we can
+    /// pin without a full Pliron context.
+    #[test]
+    fn test_constants_module_exposes_three_converters() {
+        // The function pointers must resolve. The references are
+        // never called — the goal is to lock in the names so an
+        // accidental rename in one place is caught by rustc, not
+        // by a silent behavioural regression.
+        let _: fn(
+            &mut Context,
+            &mut DialectConversionRewriter,
+            Ptr<Operation>,
+            &OperandsInfo,
+        ) -> Result<()> = convert_integer;
+        let _: fn(
+            &mut Context,
+            &mut DialectConversionRewriter,
+            Ptr<Operation>,
+            &OperandsInfo,
+        ) -> Result<()> = convert_float;
+        let _: fn(
+            &mut Context,
+            &mut DialectConversionRewriter,
+            Ptr<Operation>,
+            &OperandsInfo,
+        ) -> Result<()> = convert_undef;
+    }
+
+    /// `IntegerType::get(ctx, bits, signedness)` is the lowest-level
+    /// primitive the constant conversion uses to build signless LLVM
+    /// types. This test asserts the two signless widths used by
+    /// `convert_integer` resolve cleanly — it's the smallest
+    /// meaningful invariant that doesn't need a full IR graph.
+    #[test]
+    fn test_constants_module_signless_integer_types_resolve() {
+        let mut ctx = Context::new();
+        let i32_ty = IntegerType::get(&mut ctx, 32, Signedness::Signless);
+        let i64_ty = IntegerType::get(&mut ctx, 64, Signedness::Signless);
+        // Width round-trips through the API, which is the only
+        // behaviour the conversion code relies on.
+        assert_eq!(i32_ty.deref(&ctx).width(), 32);
+        assert_eq!(i64_ty.deref(&ctx).width(), 64);
+    }
 }

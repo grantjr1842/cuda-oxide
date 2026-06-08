@@ -174,5 +174,47 @@ pub fn trunc_to_i1(
 
 #[cfg(test)]
 mod tests {
-    // TODO: Add tests for common intrinsic helpers
+    //! Unit tests for the common intrinsic helpers.
+    //!
+    //! The helpers (`create_i1_const`, `create_i32_const`,
+    //! `create_i64_const`, `cast_to_shared_addrspace`,
+    //! `cast_to_cluster_shared_addrspace`, `call_intrinsic`,
+    //! `inline_asm_convergent`, `trunc_to_i1`) all require a Pliron
+    //! `Context` and `DialectConversionRewriter`. The unit tests
+    //! here verify the small, testable pieces:
+    //!
+    //! 1. The address-space helpers resolve with their expected
+    //!    signatures (so the dispatch driver finds them).
+    //! 2. The LLVM pointer-type address-space constructor returns
+    //!    a usable type for addrspaces 3 and 7 — the two values
+    //!    the helpers use.
+
+    use super::*;
+
+    /// `cast_to_shared_addrspace` and `cast_to_cluster_shared_addrspace`
+    /// are the two address-space cast helpers. Pinning their
+    /// function-pointer signatures catches an accidental signature
+    /// change at compile time. The bodies are not exercised here
+    /// (they require a real `Value` with a pointer type), but the
+    /// signature contract is what the dispatch table relies on.
+    #[test]
+    fn test_common_intrinsics_address_space_helpers_resolve() {
+        type SharedCast = fn(&mut Context, &mut DialectConversionRewriter, Value) -> Value;
+        let _: SharedCast = cast_to_shared_addrspace;
+        let _: SharedCast = cast_to_cluster_shared_addrspace;
+    }
+
+    /// `cast_to_shared_addrspace` targets addrspace 3 (shared
+    /// memory) and `cast_to_cluster_shared_addrspace` targets
+    /// addrspace 7 (distributed shared memory). The pointer-type
+    /// builder must accept both address spaces and report them
+    /// back, otherwise the helpers can't construct the cast target.
+    #[test]
+    fn test_llvm_pointer_type_address_space_3_and_7_resolve() {
+        let mut ctx = Context::new();
+        let shared_ptr = llvm_types::PointerType::get(&mut ctx, 3);
+        let cluster_ptr = llvm_types::PointerType::get(&mut ctx, 7);
+        assert_eq!(shared_ptr.deref(&ctx).address_space(), 3);
+        assert_eq!(cluster_ptr.deref(&ctx).address_space(), 7);
+    }
 }
