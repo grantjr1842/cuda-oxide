@@ -164,6 +164,13 @@ fn contains_tma_multicast(ll_path: &Path) -> bool {
 ///   pipeline-control pair for Ampere async copy.
 /// - `bar.warp.sync` — sub-warp barrier primitive backing
 ///   `CoalescedThreads::sync` and `WarpTile<N>::sync` in `cuda-device`.
+/// - `bar.sync N` (N != 0) with a named-barrier operand — the warp-
+///   aggregated barrier form (Ampere `bar.sync` with a named-barrier
+///   index). Detected by [`contains_named_barrier_bar_sync`] and folded
+///   into the same `DetectedFeatures::AmpereAsync` variant because
+///   both target sm_80+ and share the same user-facing error message
+///   (see `cuda-oxide-book/compiler/sm75-support.md` §3, "Ampere
+///   async-copy + warp barriers" family).
 fn contains_ampere_async_features(ll_path: &Path) -> bool {
     if let Ok(contents) = std::fs::read_to_string(ll_path) {
         // Plain `cp.async` (non-bulk). Match the leading substring but
@@ -176,9 +183,68 @@ fn contains_ampere_async_features(ll_path: &Path) -> bool {
             || contents.contains("cp.async.wait_group")
             // Warp-specialised barrier.
             || contents.contains("bar.warp.sync")
+            // Named-barrier `bar.sync` (Ampere). `bar.sync 0` is the
+            // sm_75-legal block-wide form, so this only fires for the
+            // named variant (non-zero index or `"…"` name operand).
+            || contains_named_barrier_bar_sync(ll_path)
     } else {
         false
     }
+}
+
+/// Checks for the Ampere named-barrier `bar.sync` form (sm_80+).
+///
+/// The sm_75-legal block-wide barrier is `bar.sync 0` (also known as
+/// `llvm.nvvm.barrier0`); both compile cleanly to Turing. The *named*
+/// form — `bar.sync N, !"name"` where `N` is a non-zero barrier index
+/// tied to a `bar[name]`-style name operand — is an Ampere addition
+/// (`sm_80+`) used to back warp-aggregated barriers for cooperative
+/// groups. Letting it leak to `sm_75` produces a silent compile and
+/// a JIT-load failure on Turing hardware.
+///
+/// This is a separate helper (folded into `contains_ampere_async_features`
+/// rather than getting its own `DetectedFeatures` variant) so the
+/// detection can be tested in isolation and the public `detect_features`
+/// chain is unchanged. The detector's return is "is the named-barrier
+/// form present?", which then collapses into `DetectedFeatures::AmpereAsync`
+/// in the public chain.
+///
+/// The match is deliberately conservative: a file containing *only*
+/// `bar.sync 0` does NOT match. A file containing `bar.sync` with a
+/// non-zero barrier index (e.g. `bar.sync 1`) or a name-operand
+/// string (e.g. `bar.sync ..., !"%named-barrier-1"`) does match.
+fn contains_named_barrier_bar_sync(ll_path: &Path) -> bool {
+    let Ok(contents) = std::fs::read_to_string(ll_path) else {
+        return false;
+    };
+    // The named-barrier form is identified by either:
+    //   (a) a non-zero barrier index in the IR (PTX: `bar.sync 1, "name"`),
+    //   (b) the LLVM IR name-operand form, which the NVPTX backend lowers
+    //       the name string to as a literal `%named-barrier-N` substring
+    //       in the .ll text.
+    //
+    // `bar.sync 0` (the sm_75-legal block-wide form) does NOT match any
+    // of the patterns below, which is the property the gate relies on
+    // for the `Basic` detector to fall through correctly.
+    //
+    // The `%named-barrier` substring is itself sufficient evidence of the
+    // named-barrier form (it is not a substring of any other CUDA
+    // intrinsic), so no `bar.sync` guard is needed; the gate then
+    // collapses the result into `DetectedFeatures::AmpereAsync` via
+    // `contains_ampere_async_features`.
+    contents.contains("bar.sync 1,")
+        || contents.contains("bar.sync 2,")
+        || contents.contains("bar.sync 3,")
+        || contents.contains("bar.sync 4,")
+        || contents.contains("bar.sync 5,")
+        || contents.contains("bar.sync 6,")
+        || contents.contains("bar.sync 7,")
+        || contents.contains("bar.sync 8,")
+        || contents.contains("bar.sync 9,")
+        // LLVM IR name-operand form: NVPTX backend emits the PTX
+        // `!"name"` string as a literal `%named-barrier-N` substring
+        // in the .ll text.
+        || contents.contains("named-barrier")
 }
 
 /// Maps detected features to GPU target architecture.
@@ -416,6 +482,78 @@ mod tests {
     fn test_contains_ampere_async_ignores_unrelated() {
         let path = write_temp_ll("plain", "ret void");
         assert!(!contains_ampere_async_features(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    // ----- N3: named-barrier `bar.sync` detector (Ampere sm_80+) ------------
+    //
+    // The named-barrier form is `bar.sync N, !"%named-barrier-N"` (PTX
+    // `bar.sync N, "name"`), distinct from the sm_75-legal `bar.sync 0`
+    // block-wide form. The detector fires only on the non-zero-index /
+    // name-operand variants, so a kernel that uses the plain block-wide
+    // barrier must still detect as `Basic` and compile cleanly to sm_75.
+    //
+    // See `cuda-oxide-book/compiler/sm75-support.md` §2.1 row 5 and §3
+    // "Ampere async-copy + warp barriers" bullet for the design contract.
+
+    #[test]
+    fn test_contains_named_barrier_bar_sync_detects_non_zero_index() {
+        // PTX literal: `bar.sync 1, "named_bar"`. The non-zero index
+        // (the comma-separated name follows) is the named-barrier form.
+        let path = write_temp_ll(
+            "named_barrier_index",
+            r#"call void asm sideeffect "bar.sync 1, \"\24named_bar\"", ""();"#,
+        );
+        assert!(
+            contains_named_barrier_bar_sync(&path),
+            "bar.sync 1, ... must be detected as the named-barrier form"
+        );
+        assert!(
+            contains_ampere_async_features(&path),
+            "named-barrier form must collapse into AmpereAsync via the ampere detector"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_named_barrier_bar_sync_detects_name_operand_substring() {
+        // The NVPTX backend lowers the PTX name operand to a literal
+        // `named-barrier-N` substring in the .ll text (the LLVM IR
+        // symbol-name convention). The detector must fire on that
+        // form even when the `bar.sync 1,` index prefix is absent
+        // from the substring scan (e.g. a future backend lowering
+        // that hoists the name to a metadata entry).
+        let path = write_temp_ll(
+            "named_barrier_substring",
+            "  %named-barrier-3 = ... ; metadata carrier for the named barrier",
+        );
+        assert!(
+            contains_named_barrier_bar_sync(&path),
+            "the LLVM IR name-operand substring must be detected"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_named_barrier_bar_sync_ignores_bar_sync_zero() {
+        // The block-wide `bar.sync 0` form is sm_75-legal and is the
+        // form backing `sync_threads` / `barrier` in cuda-device. The
+        // detector must NOT fire on it, otherwise every sm_75 baseline
+        // kernel would falsely trip the gate. This is the negative
+        // test that pins the detector's selectivity.
+        let path = write_temp_ll(
+            "bar_sync_zero",
+            "call void @llvm.nvvm.barrier0() ; emits 'bar.sync 0'",
+        );
+        assert!(
+            !contains_named_barrier_bar_sync(&path),
+            "bar.sync 0 (sm_75-legal block-wide) must NOT trigger the named-barrier detector"
+        );
+        assert_eq!(
+            detect_features(&path),
+            DetectedFeatures::Basic,
+            "a kernel with only bar.sync 0 must collapse to Basic"
+        );
         let _ = fs::remove_file(path);
     }
 

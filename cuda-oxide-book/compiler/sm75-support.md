@@ -30,10 +30,10 @@ The following CUDA core features are **explicitly absent on Turing**. The first 
 | `cp.async.commit_group` / `cp.async.wait_group` | sm_80 | **Yes** | Caught by `contains_ampere_async_features` (the non-bulk pipeline-control forms). |
 | `cuda::pipeline` / HW pipeline barriers | sm_80 | Inherits from `cp.async` | The pipeline API lowers to `cp.async` + `cp.async.commit_group` / `cp.async.wait_group`, so the gate catches it transitively. |
 | `bar.warp.sync` (warp-specialisation barrier) | sm_80 | **Yes** | Caught by `contains_ampere_async_features`. Backs `CoalescedThreads::sync` and `WarpTile<N>::sync` in `cuda-device`. |
-| Warp-aggregated barrier (`bar.sync` with named barrier counts) | sm_80 | **No** | Different intrinsic family from `bar.warp.sync`; not yet covered. Same feature as Ampere `bar.sync N` with a named-barrier index — would need its own detector. |
+| Warp-aggregated barrier (`bar.sync` with named barrier counts) | sm_80 | **Yes** | Caught by `contains_named_barrier_bar_sync` (folded into `contains_ampere_async_features` → `DetectedFeatures::AmpereAsync`). The detector fires on any `bar.sync` with a non-zero barrier index or a `!"%named-barrier-N"` name operand. `bar.sync 0` (the sm_75-legal block-wide form) is not detected. |
 | 64-bit atomics on global memory | sm_60    | No (falls under `Basic`)        | Available on Turing; no separate gate needed. |
 | Distributed shared memory (`mapa.shared::cluster`) | sm_90 | **Yes** | Caught by `contains_cluster_features`. |
-| TMA, WGMMA, tcgen05             | sm_90+   | **Yes**                          | See §3 — gated by the negative-feature mechanism. |
+| TMA, WGMMA, tcgen05             | sm_90+ / sm_100a | **Yes**              | See §3 — gated by the negative-feature mechanism. Per N2, this row is now split per-feature: TMA / mbarrier is sm_90+, WGMMA is sm_90a (Hopper-only), and TMA Multicast + tcgen05 / TMEM are sm_100a (Blackwell datacenter). |
 
 **If a kernel compiles cleanly to `sm_75` (auto-detected `Basic`), it is guaranteed Turing-clean for the features listed with a "Yes" in the gated column.** The remaining "No" rows are gaps in the detector set that should be filled in follow-up work.
 
@@ -46,7 +46,7 @@ To prevent compilation leaks and JIT loading crashes on Turing hardware, the com
 
 Gated feature families (all SM80+ unless noted):
 
-*   **Ampere async-copy + warp barriers** (SM80+): Rejects the non-bulk form of `cp.async`, `cp.async.commit_group` / `cp.async.wait_group`, and `bar.warp.sync`.
+*   **Ampere async-copy + warp barriers** (SM80+): Rejects the non-bulk form of `cp.async`, `cp.async.commit_group` / `cp.async.wait_group`, `bar.warp.sync`, and the named-barrier form of `bar.sync` (any `bar.sync N, !"%named-barrier-N"` or non-zero-index variant). The named-barrier detector is a separate helper (`contains_named_barrier_bar_sync`) but folds into the same `DetectedFeatures::AmpereAsync` variant for the user-facing error message.
 *   **TMA (Tensor Memory Accelerator)** (SM90+): Rejects `cp.async.bulk.tensor` and `mbarrier.*` / `fence.proxy.async` patterns.
 *   **TMA Multicast** (SM100a): Rejects the `use_cta_mask` form of `cp.async.bulk.tensor.g2s.tile`.
 *   **WGMMA (Warpgroup MMA)** (SM90a): Rejects `wgmma.fence` / `wgmma.commit_group` / `wgmma.wait_group` / `wgmma.mma_async`.
