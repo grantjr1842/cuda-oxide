@@ -26,15 +26,16 @@ The following CUDA core features are **explicitly absent on Turing**. The first 
 
 | Feature                         | Min arch | Gated by `check_target_compat`? | Notes |
 |---------------------------------|----------|---------------------------------|-------|
-| Async copy (`cp.async`)         | sm_80    | **No** — see note               | The `contains_*` detectors currently only look for `cp.async.bulk.tensor` (TMA, SM90+). A kernel that emits plain `cp.async` will compile silently to `sm_75` and JIT-fail at load time on Turing. **Workaround today:** compile to `sm_80` or higher when using `cp.async`. Tracked as a follow-up to add a `cp.async`-only detector. |
-| Warp-aggregated barrier (`bar.sync` with named barrier counts) | sm_80 | **No** | Same status as `cp.async` — not detected today. |
-| `cuda::pipeline` / HW pipeline barriers | sm_80 | **No** | Built on `cp.async`; unavailable on Turing hardware but not gated. |
+| Async copy (`cp.async`, non-bulk) | sm_80  | **Yes**                          | Caught by `contains_ampere_async_features` (which excludes the bulk form to avoid double-counting with the TMA detector). The bulk forms (`cp.async.bulk.*`) are TMA and are caught separately. |
+| `cp.async.commit_group` / `cp.async.wait_group` | sm_80 | **Yes** | Caught by `contains_ampere_async_features` (the non-bulk pipeline-control forms). |
+| `cuda::pipeline` / HW pipeline barriers | sm_80 | Inherits from `cp.async` | The pipeline API lowers to `cp.async` + `cp.async.commit_group` / `cp.async.wait_group`, so the gate catches it transitively. |
+| `bar.warp.sync` (warp-specialisation barrier) | sm_80 | **Yes** | Caught by `contains_ampere_async_features`. Backs `CoalescedThreads::sync` and `WarpTile<N>::sync` in `cuda-device`. |
+| Warp-aggregated barrier (`bar.sync` with named barrier counts) | sm_80 | **No** | Different intrinsic family from `bar.warp.sync`; not yet covered. Same feature as Ampere `bar.sync N` with a named-barrier index — would need its own detector. |
 | 64-bit atomics on global memory | sm_60    | No (falls under `Basic`)        | Available on Turing; no separate gate needed. |
 | Distributed shared memory (`mapa.shared::cluster`) | sm_90 | **Yes** | Caught by `contains_cluster_features`. |
 | TMA, WGMMA, tcgen05             | sm_90+   | **Yes**                          | See §3 — gated by the negative-feature mechanism. |
-| `bar.warp.sync` (warp-specialisation barrier) | sm_80 | **No** | Ampere hardware feature; not detected today. |
 
-**If a kernel compiles cleanly to `sm_75` (auto-detected `Basic`), it is guaranteed Turing-clean for the features listed with a "Yes" in the gated column.** Features marked "No" require manual target selection (e.g. `--arch sm_80`) to ensure correctness — relying on auto-detect for those is unsafe until the detector set is expanded.
+**If a kernel compiles cleanly to `sm_75` (auto-detected `Basic`), it is guaranteed Turing-clean for the features listed with a "Yes" in the gated column.** The remaining "No" rows are gaps in the detector set that should be filled in follow-up work.
 
 ## 3. Negative Gating & Gated Features
 
@@ -43,8 +44,9 @@ To prevent compilation leaks and JIT loading crashes on Turing hardware, the com
 1.  **IR scan** — before target selection, the emitted `.ll` is scanned for forbidden intrinsic families by the `contains_*` helpers in `crates/mir-importer/src/pipeline/target_resolution.rs`. The result is collapsed into a `DetectedFeatures` value. (The submodule is co-located under `pipeline/` rather than at the conventional `src/target_resolution.rs` path because of a module-resolution interaction with this crate's `extern crate` block — see the comment in `pipeline.rs` for the workaround.)
 2.  **Capability check** — if the resolved target is `sm_75` / `compute_75` and `detected != DetectedFeatures::Basic`, compilation is aborted with a human-readable error naming both the target and the offending feature.
 
-Gated feature families (all SM90+ unless noted):
+Gated feature families (all SM80+ unless noted):
 
+*   **Ampere async-copy + warp barriers** (SM80+): Rejects the non-bulk form of `cp.async`, `cp.async.commit_group` / `cp.async.wait_group`, and `bar.warp.sync`.
 *   **TMA (Tensor Memory Accelerator)** (SM90+): Rejects `cp.async.bulk.tensor` and `mbarrier.*` / `fence.proxy.async` patterns.
 *   **TMA Multicast** (SM100a): Rejects the `use_cta_mask` form of `cp.async.bulk.tensor.g2s.tile`.
 *   **WGMMA (Warpgroup MMA)** (SM90a): Rejects `wgmma.fence` / `wgmma.commit_group` / `wgmma.wait_group` / `wgmma.mma_async`.

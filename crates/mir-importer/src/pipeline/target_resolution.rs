@@ -38,6 +38,11 @@ pub(crate) enum DetectedFeatures {
     Tma,
     /// Thread Block Clusters (sm_90+, forward-compatible).
     Cluster,
+    /// Ampere async-copy + warp barriers (sm_80+). Plain `cp.async`,
+    /// `cp.async.commit_group`, `cp.async.wait_group`, and `bar.warp.sync`
+    /// are all Ampere features. The bulk forms (`cp.async.bulk.*`) are TMA
+    /// (sm_90+) and detected separately by `contains_tma_features`.
+    AmpereAsync,
     /// No special features (maximum compatibility, sm_80).
     Basic,
 }
@@ -141,6 +146,41 @@ fn contains_tma_multicast(ll_path: &Path) -> bool {
     }
 }
 
+/// Checks for Ampere async-copy and warp-specialised barrier instructions
+/// (sm_80+).
+///
+/// These are the intrinsics that the SM75 gate had a *known gap* on until
+/// this detector was added (see `cuda-oxide-book/compiler/sm75-support.md`
+/// §2.1). Without this detector, a kernel using `cp.async` or
+/// `bar.warp.sync` would compile silently to `sm_75` and JIT-fail at
+/// load time on Turing hardware.
+///
+/// Detected substrings (all sm_80+):
+///
+/// - `cp.async` (without the `.bulk.tensor` suffix) — Ampere async-memcpy
+///   engine. The bulk forms are TMA (sm_90+) and detected separately by
+///   `contains_tma_features` / `contains_tma_multicast`.
+/// - `cp.async.commit_group` / `cp.async.wait_group` — the non-bulk
+///   pipeline-control pair for Ampere async copy.
+/// - `bar.warp.sync` — sub-warp barrier primitive backing
+///   `CoalescedThreads::sync` and `WarpTile<N>::sync` in `cuda-device`.
+fn contains_ampere_async_features(ll_path: &Path) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(ll_path) {
+        // Plain `cp.async` (non-bulk). Match the leading substring but
+        // exclude the bulk forms to avoid double-counting with the TMA
+        // detector.
+        contents.contains("cp.async")
+            && !contents.contains("cp.async.bulk.tensor")
+            // Non-bulk pipeline-control primitives.
+            || contents.contains("cp.async.commit_group")
+            || contents.contains("cp.async.wait_group")
+            // Warp-specialised barrier.
+            || contents.contains("bar.warp.sync")
+    } else {
+        false
+    }
+}
+
 /// Maps detected features to GPU target architecture.
 pub(crate) fn select_target(features: DetectedFeatures) -> &'static str {
     match features {
@@ -156,6 +196,11 @@ pub(crate) fn select_target(features: DetectedFeatures) -> &'static str {
         // Cluster features require sm_90+ but are forward-compatible.
         // Use sm_90 for Hopper compatibility, works on Blackwell too.
         DetectedFeatures::Cluster => "sm_90",
+        // Ampere async-copy + warp barriers require sm_80+. Use sm_80
+        // for the broadest forward-compatibility — works on every arch
+        // the toolchain supports, matching the sm_80 "minimum baseline"
+        // we used to default to before the sm_75 broadening.
+        DetectedFeatures::AmpereAsync => "sm_80",
         DetectedFeatures::Basic => "sm_75",
     }
 }
@@ -207,12 +252,14 @@ pub(crate) fn detect_features(ll_path: &Path) -> DetectedFeatures {
         contains_wgmma_features(ll_path),
         contains_tma_features(ll_path),
         contains_cluster_features(ll_path),
+        contains_ampere_async_features(ll_path),
     ) {
-        (true, _, _, _, _) => DetectedFeatures::Blackwell,
-        (_, true, _, _, _) => DetectedFeatures::TmaMulticast,
-        (_, _, true, _, _) => DetectedFeatures::Wgmma,
-        (_, _, _, true, _) => DetectedFeatures::Tma,
-        (_, _, _, _, true) => DetectedFeatures::Cluster,
+        (true, _, _, _, _, _) => DetectedFeatures::Blackwell,
+        (_, true, _, _, _, _) => DetectedFeatures::TmaMulticast,
+        (_, _, true, _, _, _) => DetectedFeatures::Wgmma,
+        (_, _, _, true, _, _) => DetectedFeatures::Tma,
+        (_, _, _, _, true, _) => DetectedFeatures::Cluster,
+        (_, _, _, _, _, true) => DetectedFeatures::AmpereAsync,
         _ => DetectedFeatures::Basic,
     }
 }
@@ -304,6 +351,74 @@ mod tests {
         let _ = fs::remove_file(unicast);
     }
 
+    #[test]
+    fn test_contains_ampere_async_detects_plain_cp_async() {
+        // The non-bulk `cp.async` form is the Ampere async-memcpy engine.
+        let path = write_temp_ll(
+            "cp_async",
+            "call void @llvm.nvvm.cp.async.cg.shared.global(...)",
+        );
+        assert!(
+            contains_ampere_async_features(&path),
+            "plain cp.async must be detected as Ampere async"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_ampere_async_detects_commit_wait_group() {
+        let commit = write_temp_ll(
+            "cp_async_commit",
+            "call void @llvm.nvvm.cp.async.commit_group(...)",
+        );
+        let wait = write_temp_ll(
+            "cp_async_wait",
+            "call void @llvm.nvvm.cp.async.wait_group(i32 0)",
+        );
+        assert!(contains_ampere_async_features(&commit));
+        assert!(contains_ampere_async_features(&wait));
+        let _ = fs::remove_file(commit);
+        let _ = fs::remove_file(wait);
+    }
+
+    #[test]
+    fn test_contains_ampere_async_detects_bar_warp_sync() {
+        let path = write_temp_ll(
+            "bar_warp_sync",
+            "call void @llvm.nvvm.bar.warp.sync(i32 -1)",
+        );
+        assert!(
+            contains_ampere_async_features(&path),
+            "bar.warp.sync must be detected as Ampere async"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// TMA bulk-form intrinsics must NOT be misclassified as AmpereAsync
+    /// — the `cp.async.bulk.tensor` form belongs to TMA (sm_90+) and
+    /// should be caught by `contains_tma_features` (not the Ampere
+    /// detector). The priority chain in `detect_features` resolves the
+    /// double-match, but the Ampere detector itself must stay clean.
+    #[test]
+    fn test_contains_ampere_async_does_not_match_bulk_forms() {
+        let path = write_temp_ll(
+            "tma_bulk",
+            "call void @llvm.nvvm.cp.async.bulk.tensor.g2s.tile(i32 0, i1 0, i1 false)",
+        );
+        assert!(
+            !contains_ampere_async_features(&path),
+            "cp.async.bulk.tensor must not be classified as Ampere async"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_ampere_async_ignores_unrelated() {
+        let path = write_temp_ll("plain", "ret void");
+        assert!(!contains_ampere_async_features(&path));
+        let _ = fs::remove_file(path);
+    }
+
     // =========================================================================
     // Collapse tests: detect_features priority and Basic fall-through.
     // =========================================================================
@@ -339,6 +454,7 @@ mod tests {
         assert_eq!(select_target(DetectedFeatures::Wgmma), "sm_90a");
         assert_eq!(select_target(DetectedFeatures::Tma), "sm_100");
         assert_eq!(select_target(DetectedFeatures::Cluster), "sm_90");
+        assert_eq!(select_target(DetectedFeatures::AmpereAsync), "sm_80");
         assert_eq!(select_target(DetectedFeatures::Basic), "sm_75");
     }
 
@@ -359,12 +475,15 @@ mod tests {
         assert!(check_target_compat("sm_75", DetectedFeatures::TmaMulticast).is_err());
         assert!(check_target_compat("sm_75", DetectedFeatures::Cluster).is_err());
         assert!(check_target_compat("sm_75", DetectedFeatures::Blackwell).is_err());
+        assert!(check_target_compat("sm_75", DetectedFeatures::AmpereAsync).is_err());
         assert!(check_target_compat("compute_75", DetectedFeatures::Wgmma).is_err());
+        assert!(check_target_compat("compute_75", DetectedFeatures::AmpereAsync).is_err());
     }
 
     #[test]
     fn test_sm75_gate_passes_through_other_targets() {
         assert!(check_target_compat("sm_80", DetectedFeatures::Wgmma).is_ok());
+        assert!(check_target_compat("sm_80", DetectedFeatures::AmpereAsync).is_ok());
         assert!(check_target_compat("sm_90", DetectedFeatures::Wgmma).is_ok());
         assert!(check_target_compat("sm_90a", DetectedFeatures::Wgmma).is_ok());
         assert!(check_target_compat("sm_100", DetectedFeatures::Tma).is_ok());
@@ -403,6 +522,7 @@ mod tests {
             DetectedFeatures::TmaMulticast,
             DetectedFeatures::Cluster,
             DetectedFeatures::Blackwell,
+            DetectedFeatures::AmpereAsync,
         ] {
             assert!(
                 check_target_compat("sm_75", detected).is_err(),
@@ -474,6 +594,14 @@ define void @kernel() {
             (
                 "%id = call i32 @llvm.nvvm.read.ptx.sreg.cluster_ctaid()",
                 DetectedFeatures::Cluster,
+            ),
+            (
+                "call void @llvm.nvvm.cp.async.cg.shared.global(...)",
+                DetectedFeatures::AmpereAsync,
+            ),
+            (
+                "call void @llvm.nvvm.bar.warp.sync(i32 -1)",
+                DetectedFeatures::AmpereAsync,
             ),
         ];
 
