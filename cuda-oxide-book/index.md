@@ -170,6 +170,10 @@ compiler/mlir-dialects
 compiler/lowering-pipeline
 compiler/adding-new-intrinsics
 compiler/fuzzing-and-differential-testing
+compiler/sm75-support
+compiler/sm90a-support
+compiler/sm100a-support
+compiler/manual-ci
 ```
 
 ```{toctree}

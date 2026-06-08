@@ -47,16 +47,38 @@ pub(crate) enum DetectedFeatures {
     Basic,
 }
 
+/// Checks for WGMMA MMA Async instructions specifically.
+pub(crate) fn contains_wgmma_mma_async(ll_path: &Path) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(ll_path) {
+        contents.contains("wgmma.mma_async")
+    } else {
+        false
+    }
+}
+
+/// Checks for WGMMA fence/commit/wait instructions specifically.
+pub(crate) fn contains_wgmma_fence(ll_path: &Path) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(ll_path) {
+        contents.contains("wgmma.fence")
+            || contents.contains("wgmma.commit_group")
+            || contents.contains("wgmma.wait_group")
+    } else {
+        false
+    }
+}
+
 /// Checks for WGMMA instructions (Hopper sm_90a only, NOT forward-compatible).
 ///
 /// WGMMA (Warpgroup Matrix Multiply-Accumulate) requires sm_90a specifically.
 /// These are NOT forward-compatible - only work on H100/H200.
 fn contains_wgmma_features(ll_path: &Path) -> bool {
+    contains_wgmma_mma_async(ll_path) || contains_wgmma_fence(ll_path)
+}
+
+/// Checks for Cluster synchronization instructions specifically.
+pub(crate) fn contains_cluster_sync(ll_path: &Path) -> bool {
     if let Ok(contents) = std::fs::read_to_string(ll_path) {
-        contents.contains("wgmma.fence")
-            || contents.contains("wgmma.commit_group")
-            || contents.contains("wgmma.wait_group")
-            || contents.contains("wgmma.mma_async")
+        contents.contains("cluster.sync")
     } else {
         false
     }
@@ -74,7 +96,7 @@ fn contains_cluster_features(ll_path: &Path) -> bool {
         contents.contains("cluster_ctaid")
             || contents.contains("cluster_nctaid")
             // Cluster synchronization
-            || contents.contains("cluster.sync")
+            || contains_cluster_sync(ll_path)
             // Distributed shared memory
             || contents.contains("mapa.shared::cluster")
     } else {
@@ -103,6 +125,35 @@ fn contains_tma_features(ll_path: &Path) -> bool {
     }
 }
 
+/// Checks for Blackwell tcgen05 allocation instructions specifically.
+pub(crate) fn contains_tcgen05_alloc(ll_path: &Path) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(ll_path) {
+        contents.contains("tcgen05.alloc")
+            || contents.contains("tcgen05.dealloc")
+            || contents.contains("tcgen05.relinquish_alloc_permit")
+    } else {
+        false
+    }
+}
+
+/// Checks for Blackwell tcgen05 MMA instructions specifically.
+pub(crate) fn contains_tcgen05_mma(ll_path: &Path) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(ll_path) {
+        contents.contains("tcgen05.mma")
+    } else {
+        false
+    }
+}
+
+/// Checks for Blackwell tcgen05 synchronization/fence instructions specifically.
+pub(crate) fn contains_tcgen05_fence(ll_path: &Path) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(ll_path) {
+        contents.contains("tcgen05.fence") || contents.contains("tcgen05.commit")
+    } else {
+        false
+    }
+}
+
 /// Checks for Blackwell tcgen05 instructions (sm_100a+).
 ///
 /// These instructions require sm_100a/sm_120a (Blackwell) or newer:
@@ -113,21 +164,14 @@ fn contains_tma_features(ll_path: &Path) -> bool {
 /// - Uses Tensor Memory (TMEM) instead of registers
 /// - Different synchronization model (mbarrier-based)
 fn contains_blackwell_features(ll_path: &Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(ll_path) {
-        // tcgen05 TMEM allocation/deallocation
-        contents.contains("tcgen05.alloc")
-            || contents.contains("tcgen05.dealloc")
-            || contents.contains("tcgen05.relinquish_alloc_permit")
-            // tcgen05 synchronization
-            || contents.contains("tcgen05.fence")
-            || contents.contains("tcgen05.commit")
-            // tcgen05 MMA instructions (ws and non-ws/cta_group forms)
-            || contents.contains("tcgen05.mma")
-            // tcgen05 data movement
-            || contents.contains("tcgen05.cp")
-    } else {
-        false
-    }
+    contains_tcgen05_alloc(ll_path)
+        || contains_tcgen05_mma(ll_path)
+        || contains_tcgen05_fence(ll_path)
+        || (if let Ok(contents) = std::fs::read_to_string(ll_path) {
+            contents.contains("tcgen05.cp")
+        } else {
+            false
+        })
 }
 
 /// Checks for TMA multicast in LLVM IR (requires sm_100a).
@@ -374,6 +418,105 @@ mod tests {
     fn test_contains_wgmma_features_ignores_unrelated() {
         let path = write_temp_ll("no_wgmma", "ret void");
         assert!(!contains_wgmma_features(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_wgmma_mma_async_detects_instr() {
+        let path = write_temp_ll("wgmma_mma", "call void @llvm.nvvm.wgmma.mma_async(...)");
+        assert!(contains_wgmma_mma_async(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_wgmma_mma_async_ignores_unrelated() {
+        let path = write_temp_ll("no_wgmma_mma", "ret void");
+        assert!(!contains_wgmma_mma_async(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_wgmma_fence_detects_instr() {
+        let path1 = write_temp_ll("wgmma_fence", "wgmma.fence");
+        let path2 = write_temp_ll("wgmma_commit", "wgmma.commit_group");
+        let path3 = write_temp_ll("wgmma_wait", "wgmma.wait_group");
+        assert!(contains_wgmma_fence(&path1));
+        assert!(contains_wgmma_fence(&path2));
+        assert!(contains_wgmma_fence(&path3));
+        let _ = fs::remove_file(path1);
+        let _ = fs::remove_file(path2);
+        let _ = fs::remove_file(path3);
+    }
+
+    #[test]
+    fn test_contains_wgmma_fence_ignores_unrelated() {
+        let path = write_temp_ll("no_wgmma_fence", "ret void");
+        assert!(!contains_wgmma_fence(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_cluster_sync_detects_instr() {
+        let path = write_temp_ll("cluster_sync", "cluster.sync");
+        assert!(contains_cluster_sync(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_cluster_sync_ignores_unrelated() {
+        let path = write_temp_ll("no_cluster_sync", "ret void");
+        assert!(!contains_cluster_sync(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_tcgen05_alloc_detects_instr() {
+        let path1 = write_temp_ll("tcgen05_alloc", "tcgen05.alloc");
+        let path2 = write_temp_ll("tcgen05_dealloc", "tcgen05.dealloc");
+        let path3 = write_temp_ll("tcgen05_relinquish", "tcgen05.relinquish_alloc_permit");
+        assert!(contains_tcgen05_alloc(&path1));
+        assert!(contains_tcgen05_alloc(&path2));
+        assert!(contains_tcgen05_alloc(&path3));
+        let _ = fs::remove_file(path1);
+        let _ = fs::remove_file(path2);
+        let _ = fs::remove_file(path3);
+    }
+
+    #[test]
+    fn test_contains_tcgen05_alloc_ignores_unrelated() {
+        let path = write_temp_ll("no_tcgen05_alloc", "ret void");
+        assert!(!contains_tcgen05_alloc(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_tcgen05_mma_detects_instr() {
+        let path = write_temp_ll("tcgen05_mma", "tcgen05.mma");
+        assert!(contains_tcgen05_mma(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_tcgen05_mma_ignores_unrelated() {
+        let path = write_temp_ll("no_tcgen05_mma", "ret void");
+        assert!(!contains_tcgen05_mma(&path));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_contains_tcgen05_fence_detects_instr() {
+        let path1 = write_temp_ll("tcgen05_fence", "tcgen05.fence");
+        let path2 = write_temp_ll("tcgen05_commit", "tcgen05.commit");
+        assert!(contains_tcgen05_fence(&path1));
+        assert!(contains_tcgen05_fence(&path2));
+        let _ = fs::remove_file(path1);
+        let _ = fs::remove_file(path2);
+    }
+
+    #[test]
+    fn test_contains_tcgen05_fence_ignores_unrelated() {
+        let path = write_temp_ll("no_tcgen05_fence", "ret void");
+        assert!(!contains_tcgen05_fence(&path));
         let _ = fs::remove_file(path);
     }
 

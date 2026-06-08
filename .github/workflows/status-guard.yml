@@ -25,3 +25,6 @@ jobs:
 
       - name: Verify error* examples are in STATUS.md and smoketest.sh
         run: bash scripts/check-error-example-status.sh
+
+      - name: Verify pliron git revisions are in lockstep
+        run: bash scripts/check-pliron-lockstep.sh

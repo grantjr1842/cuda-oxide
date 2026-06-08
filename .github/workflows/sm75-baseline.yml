@@ -66,10 +66,20 @@ jobs:
           # is needed — it stops at PTX emission.
           cargo oxide build vecadd
           # The build should leave vecadd.ptx behind. Sanity check it.
-          test -f target/vecadd.ptx
-          head -1 target/vecadd.ptx
+          test -f crates/rustc-codegen-cuda/examples/vecadd/vecadd.ptx
+          head -1 crates/rustc-codegen-cuda/examples/vecadd/vecadd.ptx
           # The PTX must declare sm_75 as the target arch (Basic → sm_75).
-          grep -E '^\.version|^\.target' target/vecadd.ptx
+          grep -E '^\.version|^\.target' crates/rustc-codegen-cuda/examples/vecadd/vecadd.ptx
+
+      - name: Build async_mlp to PTX (must succeed)
+        env:
+          CUDA_OXIDE_LLC: /usr/bin/llc-21
+        run: |
+          set -e
+          cargo oxide build async_mlp
+          # The build should leave async_mlp.ptx behind. Sanity check it.
+          test -f crates/rustc-codegen-cuda/examples/async_mlp/async_mlp.ptx
+          head -1 crates/rustc-codegen-cuda/examples/async_mlp/async_mlp.ptx
 
       - name: Build tma_copy with sm_75 override (must fail with the expected error)
         env:

@@ -226,3 +226,43 @@ impl<A: TraceValue, B: TraceValue, C: TraceValue, D: TraceValue, E: TraceValue> 
 pub fn dump_var<T: TraceDump>(value: T) {
     value.trace_dump();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_trace_reset_and_finish() {
+        trace_reset();
+        assert_eq!(trace_finish(), FNV_OFFSET);
+    }
+
+    #[test]
+    fn test_trace_hashing_scalars() {
+        trace_reset();
+        dump_var((42_u8,));
+        let h1 = trace_finish();
+
+        trace_reset();
+        dump_var((42_u8,));
+        let h2 = trace_finish();
+        assert_eq!(h1, h2);
+
+        trace_reset();
+        dump_var((43_u8,));
+        let h3 = trace_finish();
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn test_trace_hashing_tuples() {
+        trace_reset();
+        dump_var((1_u32, 2_u64));
+        let h1 = trace_finish();
+
+        trace_reset();
+        dump_var((1_u32,));
+        let h2 = trace_finish();
+        assert_ne!(h1, h2);
+    }
+}

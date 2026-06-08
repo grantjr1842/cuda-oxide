@@ -32,7 +32,6 @@ jobs:
         # Crates intentionally not in this matrix:
         #   * `cuda-bindings`, `libnvvm-sys`, `nvjitlink-sys` — sys binding
         #     shells with no `#[test]` functions; covered transitively.
-        #   * `fuzzer` — differential-testing infra with no unit tests.
         #   * `rustc-codegen-cuda` — its own [workspace] that links against
         #     `rustc-private` dylibs; covered by the dedicated clippy job.
         include:
@@ -44,6 +43,7 @@ jobs:
           - package: oxide-artifacts
           - package: reserved-oxide-symbols
           - package: cuda-macros
+          - package: fuzzer
           # trybuild compile-fail suite for ThreadIndex / DisjointSlice safety
           - package: cuda-device
           # pure-Rust kernel-launch helpers + tcgen05 tiling tables

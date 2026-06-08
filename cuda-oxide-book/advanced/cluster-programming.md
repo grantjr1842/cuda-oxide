@@ -307,4 +307,5 @@ measure before scaling up.
   mode uses cluster pairs for wider MMA tiles
 - [Shared Memory and Synchronization](shared-memory-and-synchronization.md) —
   the per-block foundation that DSMEM extends
+- [SM90/SM90a (Hopper) Target Support](../compiler/sm90a-support.md) — compiler target resolution and gating for Cluster features
 :::

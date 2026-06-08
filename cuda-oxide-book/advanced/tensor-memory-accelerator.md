@@ -292,4 +292,6 @@ implementations rely on.
   the manual load pattern that TMA replaces
 - [Matrix Multiply Accelerators](matrix-multiply-accelerators.md) — where
   TMA feeds the tensor cores
+- [SM90/SM90a (Hopper) Target Support](../compiler/sm90a-support.md) — compiler target resolution and gating for TMA features
+- [SM100/SM100a (Blackwell) Target Support](../compiler/sm100a-support.md) — compiler target resolution and gating for TMA Multicast features
 :::

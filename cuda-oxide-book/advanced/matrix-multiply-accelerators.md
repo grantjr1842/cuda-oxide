@@ -311,4 +311,6 @@ compute.
   to the tensor cores
 - [Cluster Programming](cluster-programming.md) — CG2 mode and multicast
   for multi-CTA MMA
+- [SM90/SM90a (Hopper) Target Support](../compiler/sm90a-support.md) — compiler target resolution and gating for WGMMA
+- [SM100/SM100a (Blackwell) Target Support](../compiler/sm100a-support.md) — compiler target resolution and gating for tcgen05/TMEM
 :::
