@@ -212,9 +212,20 @@ impl<T: DeviceCopy> DeviceBuffer<T> {
         let len = data.len();
         let num_bytes = std::mem::size_of_val(data);
 
-        let ptr = unsafe { crate::memory::malloc_sync(num_bytes)? };
-        unsafe {
-            crate::memory::memcpy_htod_async(ptr, data.as_ptr(), num_bytes, stream.cu_stream())?;
+        let ptr = if num_bytes == 0 {
+            0
+        } else {
+            unsafe { crate::memory::malloc_sync(num_bytes)? }
+        };
+        if num_bytes > 0 {
+            unsafe {
+                crate::memory::memcpy_htod_async(
+                    ptr,
+                    data.as_ptr(),
+                    num_bytes,
+                    stream.cu_stream(),
+                )?;
+            }
         }
         Ok(Self {
             ptr,
@@ -269,7 +280,11 @@ impl<T: DeviceCopy> DeviceBuffer<T> {
         let ctx = stream.context().clone();
         let num_bytes = len * std::mem::size_of::<T>();
 
-        let ptr = unsafe { crate::memory::malloc_sync(num_bytes)? };
+        let ptr = if num_bytes == 0 {
+            0
+        } else {
+            unsafe { crate::memory::malloc_sync(num_bytes)? }
+        };
         if num_bytes > 0 {
             unsafe {
                 crate::memory::memset_d8_async(ptr, 0, num_bytes, stream.cu_stream())?;
@@ -289,16 +304,20 @@ impl<T: DeviceCopy> DeviceBuffer<T> {
     /// to read immediately.
     pub fn to_host_vec(&self, stream: &CudaStream) -> Result<Vec<T>, DriverError> {
         let mut host = Vec::with_capacity(self.len);
-        unsafe {
-            crate::memory::memcpy_dtoh_async(
-                host.as_mut_ptr(),
-                self.ptr,
-                self.num_bytes(),
-                stream.cu_stream(),
-            )?;
+        if self.len > 0 && self.num_bytes() > 0 {
+            unsafe {
+                crate::memory::memcpy_dtoh_async(
+                    host.as_mut_ptr(),
+                    self.ptr,
+                    self.num_bytes(),
+                    stream.cu_stream(),
+                )?;
+            }
         }
         stream.synchronize()?;
-        unsafe { host.set_len(self.len) };
+        if self.len > 0 {
+            unsafe { host.set_len(self.len) };
+        }
         Ok(host)
     }
 
@@ -313,13 +332,15 @@ impl<T: DeviceCopy> DeviceBuffer<T> {
             dst.len(),
             self.len
         );
-        unsafe {
-            crate::memory::memcpy_dtoh_async(
-                dst.as_mut_ptr(),
-                self.ptr,
-                self.num_bytes(),
-                stream.cu_stream(),
-            )?;
+        if self.len > 0 && self.num_bytes() > 0 {
+            unsafe {
+                crate::memory::memcpy_dtoh_async(
+                    dst.as_mut_ptr(),
+                    self.ptr,
+                    self.num_bytes(),
+                    stream.cu_stream(),
+                )?;
+            }
         }
         stream.synchronize()
     }
@@ -380,14 +401,17 @@ impl<T: DeviceCopy> DeviceBuffer<T> {
             dst.len(),
             self.len
         );
-        unsafe {
-            crate::memory::memcpy_dtoh_async(
-                dst.as_mut_ptr(),
-                self.ptr,
-                self.num_bytes(),
-                stream.cu_stream(),
-            )
+        if self.len > 0 && self.num_bytes() > 0 {
+            unsafe {
+                crate::memory::memcpy_dtoh_async(
+                    dst.as_mut_ptr(),
+                    self.ptr,
+                    self.num_bytes(),
+                    stream.cu_stream(),
+                )?;
+            }
         }
+        Ok(())
     }
 
     /// Enqueues a host-to-device copy from a pinned host buffer into this
@@ -433,8 +457,16 @@ impl<T: DeviceCopy> DeviceBuffer<T> {
             self.len
         );
         let num_bytes = src.num_bytes();
-        unsafe {
-            crate::memory::memcpy_htod_async(self.ptr, src.as_ptr(), num_bytes, stream.cu_stream())
+        if num_bytes > 0 {
+            unsafe {
+                crate::memory::memcpy_htod_async(
+                    self.ptr,
+                    src.as_ptr(),
+                    num_bytes,
+                    stream.cu_stream(),
+                )?;
+            }
         }
+        Ok(())
     }
 }

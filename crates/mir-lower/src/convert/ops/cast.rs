@@ -812,8 +812,8 @@ mod tests {
         use pliron::builtin::types::FP32Type;
         let ctx = Context::new();
         let f32_ty: Ptr<pliron::r#type::TypeObj> = FP32Type::get(&ctx).into();
-        let width = float_bit_width(&ctx, f32_ty)
-            .expect("float_bit_width must succeed for an f32 type");
+        let width =
+            float_bit_width(&ctx, f32_ty).expect("float_bit_width must succeed for an f32 type");
         assert_eq!(width, 32, "f32 must report 32 bits via FloatTypeInterface");
     }
 }

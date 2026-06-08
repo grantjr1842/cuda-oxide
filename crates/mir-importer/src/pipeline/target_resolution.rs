@@ -389,7 +389,10 @@ mod tests {
 
     #[test]
     fn test_contains_cluster_features_detects_intrinsic() {
-        let path = write_temp_ll("cluster", "%id = call i32 @llvm.nvvm.read.ptx.sreg.cluster_ctaid()");
+        let path = write_temp_ll(
+            "cluster",
+            "%id = call i32 @llvm.nvvm.read.ptx.sreg.cluster_ctaid()",
+        );
         assert!(contains_cluster_features(&path));
         let _ = fs::remove_file(path);
     }
@@ -632,13 +635,19 @@ mod tests {
     fn test_sm75_gate_error_message_mentions_target_and_feature() {
         let err = check_target_compat("sm_75", DetectedFeatures::Wgmma).unwrap_err();
         assert!(err.contains("sm_75"), "error must name the target: {err}");
-        assert!(err.contains("Wgmma"), "error must name the offending feature: {err}");
+        assert!(
+            err.contains("Wgmma"),
+            "error must name the offending feature: {err}"
+        );
     }
 
     #[test]
     fn test_sm75_gate_rejects_75a_with_helpful_error() {
         let err = check_target_compat("sm_75a", DetectedFeatures::Basic).unwrap_err();
-        assert!(err.contains("sm_75a"), "error must name the bad target: {err}");
+        assert!(
+            err.contains("sm_75a"),
+            "error must name the bad target: {err}"
+        );
         assert!(
             err.contains("sm_75"),
             "error must suggest the correct target: {err}"
@@ -720,7 +729,10 @@ define void @kernel() {
         // Each entry is a (intrinsic substring, expected DetectedFeatures).
         // A regression in any detector would flip the assertion below.
         let cases: &[(&str, DetectedFeatures)] = &[
-            ("call void @llvm.nvvm.wgmma.mma_async(...)", DetectedFeatures::Wgmma),
+            (
+                "call void @llvm.nvvm.wgmma.mma_async(...)",
+                DetectedFeatures::Wgmma,
+            ),
             (
                 "call void @llvm.nvvm.cp.async.bulk.tensor.g2s.tile(...)",
                 DetectedFeatures::Tma,
@@ -847,7 +859,9 @@ define void @kernel(ptr %dst, ptr %src) {
         );
         let err = check_target_compat("sm_75", detected).unwrap_err();
         assert!(
-            err.contains("Architecture sm_75 does not support detected advanced features: AmpereAsync"),
+            err.contains(
+                "Architecture sm_75 does not support detected advanced features: AmpereAsync"
+            ),
             "cp.async gate error must match doc format, got: {err}"
         );
         let _ = fs::remove_file(path);
@@ -870,7 +884,9 @@ define void @kernel(ptr %dst, ptr %src) {
         );
         let err = check_target_compat("sm_75", detected).unwrap_err();
         assert!(
-            err.contains("Architecture sm_75 does not support detected advanced features: AmpereAsync"),
+            err.contains(
+                "Architecture sm_75 does not support detected advanced features: AmpereAsync"
+            ),
             "bar.warp.sync gate error must match doc format, got: {err}"
         );
         let _ = fs::remove_file(path);
@@ -896,7 +912,9 @@ define void @kernel(ptr %dst, ptr %src) {
         );
         let err = check_target_compat("sm_75", detected).unwrap_err();
         assert!(
-            err.contains("Architecture sm_75 does not support detected advanced features: AmpereAsync"),
+            err.contains(
+                "Architecture sm_75 does not support detected advanced features: AmpereAsync"
+            ),
             "named-barrier gate error must match doc format, got: {err}"
         );
         let _ = fs::remove_file(path);
