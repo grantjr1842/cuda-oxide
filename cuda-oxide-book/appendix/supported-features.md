@@ -170,6 +170,41 @@ roadmap, **N/A** = not applicable or no identified need.
 
 ---
 
+## SM75 (Turing) Baseline Detector Coverage
+
+This section cross-references every `sm_80+` (or higher) feature gated
+by the SM75 negative-feature gate to the detector that catches it and
+the unit tests that pin the contract. See
+`compiler/sm75-support.md` §2.1 for the source-of-truth detector table
+and §3 for the gate semantics.
+
+| §2.1 row | Min arch | Detector (in `mir-importer/src/pipeline/target_resolution.rs`) | Unit tests pinning the detector |
+|:---------|:---------|:--------------------------------------------------------------|:---------------------------------|
+| `cp.async` (non-bulk) / `cp.async.commit_group` / `cp.async.wait_group` | sm_80 | `contains_ampere_async_features` | `test_contains_ampere_async_detects_plain_cp_async`, `test_contains_ampere_async_detects_commit_wait_group`, `test_cp_async_gate_produces_doc_advertised_error` |
+| `bar.warp.sync` (warp-specialised barrier) | sm_80 | `contains_ampere_async_features` | `test_contains_ampere_async_detects_bar_warp_sync`, `test_bar_warp_sync_gate_produces_doc_advertised_error` |
+| Named-barrier `bar.sync` (warp-aggregated) | sm_80 | `contains_named_barrier_bar_sync` (folded into `contains_ampere_async_features`) | `test_contains_named_barrier_bar_sync_detects_non_zero_index`, `test_contains_named_barrier_bar_sync_detects_name_operand_substring`, `test_contains_named_barrier_bar_sync_ignores_bar_sync_zero`, `test_named_barrier_bar_sync_gate_produces_doc_advertised_error` |
+| Distributed shared memory (`mapa.shared::cluster`) | sm_90 | `contains_cluster_features` | `test_contains_cluster_features_detects_intrinsic` |
+| TMA / mbarrier (`cp.async.bulk.tensor`, `mbarrier.*`, `fence.proxy.async`) | sm_90 | `contains_tma_features` | `test_contains_tma_features_detects_intrinsic`, `test_sm75_gate_doc_verification_tma_copy_uses_plain_tma` |
+| WGMMA (`wgmma.fence` / `wgmma.commit_group` / `wgmma.wait_group` / `wgmma.mma_async`) | sm_90a | `contains_wgmma_features` | `test_contains_wgmma_features_detects_intrinsic`, `test_contains_wgmma_features_ignores_unrelated` |
+| tcgen05 / TMEM (Blackwell datacenter) | sm_100a | `contains_blackwell_features` | `test_contains_blackwell_features_detects_intrinsic` |
+| TMA Multicast (`use_cta_mask` form) | sm_100a | `contains_tma_multicast` | `test_contains_tma_multicast_requires_cta_mask` |
+| End-to-end chain (IR → detect → select → gate) for each intrinsic family | — | all of the above | `test_sm75_gate_full_chain_for_each_intrinsic_family`, `test_sm75_gate_passes_through_other_targets`, `test_sm75_gate_rejects_advanced_features`, `test_sm75_gate_rejects_75a_with_helpful_error`, `test_detect_features_prefers_most_specific`, `test_detect_features_falls_through_to_basic` |
+
+**Doc-honesty contract:** every `cp.async` / `bar.warp.sync` /
+named-barrier `bar.sync` test asserts the exact §3 error string
+`Architecture sm_75 does not support detected advanced features: AmpereAsync`.
+The TMA test asserts the corresponding `Tma` string. A drift in the
+gate's error format or detector label is caught at `cargo test -p
+mir-importer` time, before the doc and the code can disagree.
+
+**What "Yes (detector)" means in the §2.1 table:** every "Yes" row
+in §2.1 corresponds to a row here. If §2.1 says "Yes" but no row
+here matches, that's a doc-honesty bug and the fix is either to add
+the missing detector or to flip the §2.1 row to "No" with a
+justification.
+
+---
+
 ## Not Yet Implemented
 
 | Feature | Status | Notes |
