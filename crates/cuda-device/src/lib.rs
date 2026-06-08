@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#![feature(f16)]
+#![cfg_attr(feature_f16, feature(f16))]
 #![no_std]
 
 pub use cuda_macros::{

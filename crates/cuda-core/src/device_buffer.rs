@@ -73,10 +73,12 @@ impl_device_copy!(
     u64,
     u128,
     usize,
-    f16,
     f32,
     f64
 );
+
+#[cfg(feature_f16)]
+unsafe impl DeviceCopy for f16 {}
 
 unsafe impl<T: DeviceCopy, const N: usize> DeviceCopy for [T; N] {}
 unsafe impl<T: ?Sized> DeviceCopy for *const T {}

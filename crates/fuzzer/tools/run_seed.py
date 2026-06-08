@@ -150,7 +150,7 @@ def classify_run(returncode: int, output: str) -> tuple[str, str, str]:
     return ("COMPILE_FAIL", "backend", reason_from_output(output))
 
 
-def run_seed(seed: int, *, no_build: bool, keep_logs: bool) -> dict[str, object]:
+def run_seed(seed: int, *, no_build: bool, keep_logs: bool, build_only: bool = False) -> dict[str, object]:
     generator_cmd = [
         sys.executable,
         str(MIR_GENERATOR),
@@ -189,9 +189,18 @@ def run_seed(seed: int, *, no_build: bool, keep_logs: bool) -> dict[str, object]
         return record
 
     remove_stale_ptx()
-    run_cmd = ["cargo", "oxide", "run", "rustlantis-smoke"]
+    if build_only:
+        run_cmd = ["cargo", "oxide", "build", "rustlantis-smoke"]
+    else:
+        run_cmd = ["cargo", "oxide", "run", "rustlantis-smoke"]
     result = run(run_cmd, cwd=ROOT)
-    status, stage, reason = classify_run(result.returncode, result.stdout)
+    if build_only:
+        if result.returncode == 0:
+            status, stage, reason = ("PASS", "build", "Compilation succeeded")
+        else:
+            status, stage, reason = ("COMPILE_FAIL", "backend", reason_from_output(result.stdout))
+    else:
+        status, stage, reason = classify_run(result.returncode, result.stdout)
 
     if status == "PASS":
         print(f"seed {seed}: PASS")
@@ -267,6 +276,11 @@ def main() -> int:
         action="store_true",
         help="continue after the first non-PASS seed",
     )
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="only compile the generated case without running it",
+    )
     args = parser.parse_args()
 
     seeds = [args.seed] if args.seed is not None else range(args.start, args.start + args.count)
@@ -278,7 +292,12 @@ def main() -> int:
     for idx, seed in enumerate(seeds):
         # Build the vendored rustlantis generator once, then reuse it.
         skip_generator_build = args.no_build or idx > 0
-        record = run_seed(seed, no_build=skip_generator_build, keep_logs=args.keep_logs)
+        record = run_seed(
+            seed,
+            no_build=skip_generator_build,
+            keep_logs=args.keep_logs,
+            build_only=args.build_only,
+        )
         records.append(record)
         status = str(record["status"])
         statuses[status] = statuses.get(status, 0) + 1

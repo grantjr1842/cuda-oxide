@@ -36,7 +36,7 @@
 //! Raw bindings are available as [`sys`] for any driver entry point not yet
 //! wrapped.
 
-#![feature(f16)]
+#![cfg_attr(feature_f16, feature(f16))]
 
 /// CUDA context management (primary context, RAII).
 pub mod context;

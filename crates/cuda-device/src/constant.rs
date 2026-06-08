@@ -98,10 +98,12 @@ impl_constant_memory_value!(
     u64,
     u128,
     usize,
-    f16,
     f32,
     f64
 );
+
+#[cfg(feature_f16)]
+unsafe impl ConstantMemoryValue for f16 {}
 
 unsafe impl<T: ConstantMemoryValue, const N: usize> ConstantMemoryValue for [T; N] {}
 unsafe impl<T: ?Sized> ConstantMemoryValue for *const T {}

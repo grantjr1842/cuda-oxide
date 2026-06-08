@@ -14,8 +14,8 @@
 // toolchain, so the broader project is firmly inside rustc's internal API
 // surface. Anyone trying to lift this helper to a stable crate will hit
 // the same gate and have to make the same trade-off there.
-#![feature(core_intrinsics)]
-#![allow(internal_features)]
+#![cfg_attr(feature_core_intrinsics, feature(core_intrinsics))]
+#![cfg_attr(feature_core_intrinsics, allow(internal_features))]
 
 //! Host-side utilities for CUDA kernel development.
 //!

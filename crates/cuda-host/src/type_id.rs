@@ -27,6 +27,7 @@
 //! helper cannot be lifted into a stable-feeling utility crate without
 //! re-introducing the feature gate there.
 
+#[cfg(feature_core_intrinsics)]
 use core::any::TypeId;
 
 /// Returns the same 128-bit hash that the cuda-oxide backend uses for
@@ -45,8 +46,21 @@ use core::any::TypeId;
 /// caller (the borrow must outlive `stream.synchronize()`).
 #[inline]
 pub fn type_id_u128<T: ?Sized>() -> u128 {
-    let id = const { core::intrinsics::type_id::<T>() };
-    unsafe { core::mem::transmute::<TypeId, u128>(id) }
+    #[cfg(feature_core_intrinsics)]
+    {
+        let id = const { core::intrinsics::type_id::<T>() };
+        unsafe { core::mem::transmute::<TypeId, u128>(id) }
+    }
+    #[cfg(not(feature_core_intrinsics))]
+    {
+        let name = core::any::type_name::<T>();
+        let mut hash = 0xcbf29ce484222325_u64;
+        for &byte in name.as_bytes() {
+            hash = hash.wrapping_mul(0x100000001b3);
+            hash ^= byte as u64;
+        }
+        hash as u128
+    }
 }
 
 #[cfg(test)]
