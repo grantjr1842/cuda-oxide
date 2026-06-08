@@ -1,0 +1,20 @@
+[package]
+name = "sm75_showcase"
+version = "0.2.0"
+edition = "2024"
+authors = ["Nihal Pasham <nihalp@nvidia.com>"]
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+cuda-core = { path = "../../../cuda-core" }
+cuda-macros = { path = "../../../../crates/cuda-macros" }
+cuda-device = { path = "../../../../crates/cuda-device" }
+cuda-host = { path = "../../../../crates/cuda-host" }
+
+[features]
+default = []
+trigger_ampere_gate = []
+trigger_tma_gate = []
+

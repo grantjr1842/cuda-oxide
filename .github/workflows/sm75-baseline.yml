@@ -100,3 +100,15 @@ jobs:
             echo "::error::tma_copy + --arch sm_75 did not produce the expected gate error"
             exit 1
           fi
+
+      - name: Run fuzzer smoke compilation check (Seed 192)
+        env:
+          CUDA_TOOLKIT_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+          CUDA_OXIDE_LLC: /usr/bin/llc-21
+        run: |
+          sysroot="$(rustc --print sysroot)"
+          export LIBRARY_PATH="${sysroot}/lib:${LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="${sysroot}/lib:${LD_LIBRARY_PATH:-}"
+          # Run seed 192 in build-only mode to verify compiler stability
+          python3 crates/fuzzer/tools/run_seed.py --seed 192 --build-only
+
